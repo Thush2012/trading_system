@@ -4,92 +4,132 @@ import sys
 import os
 from dotenv import load_dotenv
 
-# Ensure local environment variables are loaded
 load_dotenv()
 
-from core.logger import setup_system_logger
+PROJECT_DIR = r"C:\Users\thush\trading_system"
+PYTHON_EXE = os.path.join(PROJECT_DIR, ".venv", "Scripts", "pythonw.exe") # Use pythonw to prevent engine window
+MAIN_SCRIPT = os.path.join(PROJECT_DIR, "main.py")
+
+os.chdir(PROJECT_DIR)
+
 from core.notifier import TelegramNotifier
 from core.config import Config
+from core.logger import setup_system_logger
 
 log = setup_system_logger("DeployWatcher")
 notifier = TelegramNotifier(bot_token=Config.TELEGRAM_BOT_TOKEN, chat_id=Config.TELEGRAM_CHAT_ID)
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Windows flag: Strictly suppress any console popup
+NO_WINDOW_FLAG = 0x08000000 if sys.platform == "win32" else 0
 
 def get_current_git_hash() -> str:
     try:
-        out = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT_DIR)
-        return out.decode().strip()
-    except Exception as e:
-        log.error(f"Failed to read local git hash: {e}")
-        return ""
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            creationflags=NO_WINDOW_FLAG,
+            stderr=subprocess.DEVNULL
+        ).decode().strip()[:7]
+    except Exception:
+        return "UNKNOWN"
 
-def check_for_updates() -> bool:
+def check_remote_updates() -> bool:
     try:
-        # Check remote main branch without applying changes
-        subprocess.check_call(["git", "fetch", "origin", "main"], cwd=PROJECT_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        local_hash = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT_DIR).decode().strip()
-        remote_hash = subprocess.check_output(["git", "rev-parse", "origin/main"], cwd=PROJECT_DIR).decode().strip()
+        subprocess.check_call(
+            ["git", "fetch", "origin", "main"],
+            creationflags=NO_WINDOW_FLAG,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        local_hash = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            creationflags=NO_WINDOW_FLAG,
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        remote_hash = subprocess.check_output(
+            ["git", "rev-parse", "origin/main"],
+            creationflags=NO_WINDOW_FLAG,
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
         return local_hash != remote_hash
     except Exception as e:
-        log.error(f"Git remote check error: {e}")
+        log.error(f"Git check error: {e}")
         return False
 
-def pull_latest_code() -> str:
-    subprocess.check_call(["git", "pull", "origin", "main"], cwd=PROJECT_DIR)
-    return get_current_git_hash()[:7]
+def pull_and_rebuild() -> str:
+    subprocess.check_call(
+        ["git", "pull", "origin", "main"],
+        creationflags=NO_WINDOW_FLAG,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    req_file = os.path.join(PROJECT_DIR, "requirements.txt")
+    if os.path.exists(req_file):
+        pip_exe = os.path.join(PROJECT_DIR, ".venv", "Scripts", "pip.exe")
+        subprocess.call(
+            [pip_exe, "install", "-r", "requirements.txt"],
+            creationflags=NO_WINDOW_FLAG,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+    return get_current_git_hash()
 
 def main():
-    log.info("Continuous deployment watcher online. Monitoring GitHub repo...")
-    python_bin = sys.executable
-
-    # Spawn main.py as a detached background process
-    bot_proc = subprocess.Popen([python_bin, "main.py"], cwd=PROJECT_DIR)
-    current_commit = get_current_git_hash()[:7]
+    log.info("Continuous deployment watcher initialized.")
+    initial_hash = get_current_git_hash()
 
     notifier.send_alert(
-        f"🚀 *Zero-Window Background Engine Live*\n\n"
-        f"• Commit Version: `{current_commit}`\n"
-        f"• Auto-deploy: Polling GitHub every 60s\n"
-        f"• UI: 100% headless via Telegram"
+        f"🖥️ *Windows Background Service Live*\n"
+        f"• Git Commit: `{initial_hash}`\n"
+        f"• Status: 100% Silent (Zero Popups)\n"
+        f"• GitHub Sync: Active"
+    )
+
+    # Spawn engine with NO_WINDOW flag
+    bot_proc = subprocess.Popen(
+        [PYTHON_EXE, MAIN_SCRIPT],
+        creationflags=NO_WINDOW_FLAG,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
     )
 
     while True:
         try:
             time.sleep(60)
 
-            # Health auto-recovery: restart if main.py unexpectedly terminated
+            # Auto-restart if crashed
             if bot_proc.poll() is not None:
-                log.warning("Trading process exited unexpectedly. Restarting engine...")
-                bot_proc = subprocess.Popen([python_bin, "main.py"], cwd=PROJECT_DIR)
+                log.warning("Main engine stopped unexpectedly. Relaunching...")
+                notifier.send_alert("⚠️ *Engine Recovering:* Process restarted after unexpected exit.")
+                bot_proc = subprocess.Popen(
+                    [PYTHON_EXE, MAIN_SCRIPT],
+                    creationflags=NO_WINDOW_FLAG,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
 
-            # Check for new GitHub commits
-            if check_for_updates():
-                log.info("New commit detected on GitHub. Hot-reloading...")
-                notifier.send_alert("📦 *Update Detected on GitHub*\nPulling new changes and restarting engine...")
+            # Check GitHub for updates
+            if check_remote_updates():
+                log.info("New commit detected! Reloading...")
+                notifier.send_alert("📦 *GitHub Push Detected!* Pulling code and reloading engine...")
 
-                # Graceful termination
                 bot_proc.terminate()
                 try:
                     bot_proc.wait(timeout=15)
                 except subprocess.TimeoutExpired:
                     bot_proc.kill()
 
-                # Pull fresh code
-                new_commit = pull_latest_code()
+                new_hash = pull_and_rebuild()
+                bot_proc = subprocess.Popen(
+                    [PYTHON_EXE, MAIN_SCRIPT],
+                    creationflags=NO_WINDOW_FLAG,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
 
-                # Update any modified pip dependencies
-                req_file = os.path.join(PROJECT_DIR, "requirements.txt")
-                if os.path.exists(req_file):
-                    subprocess.call([python_bin, "-m", "pip", "install", "-r", "requirements.txt"], cwd=PROJECT_DIR)
-
-                # Spin up new instance with updated code
-                bot_proc = subprocess.Popen([python_bin, "main.py"], cwd=PROJECT_DIR)
-                notifier.send_alert(f"✅ *Hot-Reload Complete*\n• Engine active on commit: `{new_commit}`")
-
-        except Exception as err:
-            log.error(f"Watcher loop exception: {err}")
-            time.sleep(10)
+                notifier.send_alert(f"✅ *Update Applied Successfully!*\n• Version: `{new_hash}`\n• System live.")
+        except Exception as e:
+            log.error(f"Watcher loop error: {e}")
+            time.sleep(15)
 
 if __name__ == "__main__":
     main()
