@@ -1,0 +1,6 @@
+{
+    "python.analysis.extraPaths": [
+        "C:\\Users\\thush\\trading_system\\.venv\\Lib\\site-packages",
+        "C:\\python314\\Lib\\site-packages"
+    ]
+}
