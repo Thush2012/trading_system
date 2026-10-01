@@ -1,16 +1,18 @@
 import logging
-import MetaTrader5 as mt5
 import asyncio
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+import MetaTrader5 as mt5
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from core.config import Config
 from core.logger import setup_system_logger
 from core.scanner import MultiTimeframeScanner
 from core.mt5_connection import connect_mt5
+from core.executor import ExecutionEngine
 
 log = setup_system_logger("TelegramBot")
+executor = ExecutionEngine()
 
-# Define persistent mobile keyboard layout
+# Persistent bottom thumb keyboard
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("📊 Live Account & PnL"), KeyboardButton("⚡ Scan Opportunities")],
@@ -22,13 +24,15 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "🤖 *Dual-Market Trading Terminal Connected*\n\n"
-        "System is running 24/7 in headless mode. Use the persistent keyboard below for quick, one-tap mobile controls."
+        "• System: 24/7 Headless Engine\n"
+        "• Interactive Execution: Enabled\n"
+        "Tap the buttons below to interact with MT5."
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not connect_mt5():
-        await update.message.reply_text("❌ *Error:* Failed to link background MT5 engine.", parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("❌ MT5 background process not linked.", reply_markup=MAIN_KEYBOARD)
         return
 
     account = mt5.account_info()
@@ -95,18 +99,98 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚪ *Market Scan Complete:* No high-probability setups meeting ADX + 4H criteria right now.", parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
         return
 
-    msg = "⚡ *IMMEDIATE TRADE OPPORTUNITIES FOUND:*\n\n"
+    # Send each found opportunity with an individual Execute / Dismiss button
     for _, row in active.iterrows():
-        surge = "🔥 [SURGE] " if row.get("is_sudden_surge") else ""
-        msg += (
-            f"{surge}*{row['symbol']}* ({row['timeframe']}) — {row['action']}\n"
-            f"• Entry: `{row['entry']}`\n"
-            f"• Stop Loss: `{row['stop_loss']}`\n"
-            f"• Take Profit: `{row['take_profit']}`\n"
-            f"• 4H Macro Bias: `{row.get('macro_bias', 'ANY')}`\n"
+        action_word = "BUY" if "BUY" in row["action"] else "SELL"
+        symbol = row["symbol"]
+        entry = row["entry"]
+        sl = row["stop_loss"]
+        tp = row["take_profit"]
+
+        # Encapsulate trade parameters inside callback data
+        # Format: exec|SYMBOL|ACTION|SL|TP
+        callback_exec = f"exec|{symbol}|{action_word}|{sl}|{tp}"
+        callback_dismiss = "dismiss"
+
+        inline_markup = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(f"✅ Execute {action_word} 0.01", callback_data=callback_exec),
+                InlineKeyboardButton("❌ Dismiss", callback_data=callback_dismiss)
+            ]
+        ])
+
+        msg = (
+            f"⚡ *TRADE OPPORTUNITY IDENTIFIED*\n"
+            f"• Symbol: *{symbol}* ({row['timeframe']})\n"
+            f"• Signal: *{row['action']}*\n"
+            f"• Entry: `{entry}`\n"
+            f"• Stop Loss: `{sl}`\n"
+            f"• Take Profit: `{tp}`\n"
+            f"• Macro Bias: `{row.get('macro_bias', 'ANY')}`\n"
             f"• RSI: `{row['rsi']}` | ADX: `{row.get('adx', 'N/A')}`\n\n"
+            f"_Tap below to execute directly in MT5:_"
         )
-    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=inline_markup)
+
+async def handle_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles clicks on the inline Execute / Dismiss buttons."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    if data == "dismiss":
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("⚪ *Setup dismissed.*", parse_mode="Markdown")
+        return
+
+    if data.startswith("exec|"):
+        _, symbol, action, sl_str, tp_str = data.split("|")
+        sl_val = float(sl_str)
+        tp_val = float(tp_str)
+
+        if not connect_mt5():
+            await query.message.reply_text("❌ *Execution Failed:* MT5 background terminal is offline.", parse_mode="Markdown")
+            return
+
+        sym_info = mt5.symbol_info(symbol)
+        if not sym_info:
+            await query.message.reply_text(f"❌ *Symbol Not Found:* `{symbol}` is not configured in MT5.", parse_mode="Markdown")
+            return
+
+        point = sym_info.point
+        tick = mt5.symbol_info_tick(symbol)
+        current_price = tick.ask if action == "BUY" else tick.bid
+
+        # Calculate exact point distances for the executor
+        sl_points = int(abs(current_price - sl_val) / point) if point else 150
+        tp_points = int(abs(current_price - tp_val) / point) if point else 300
+
+        # Execute market deal
+        res = executor.place_forex_order(
+            symbol=symbol,
+            action=action,
+            lot_size=0.01,
+            sl_points=sl_points,
+            tp_points=tp_points
+        )
+
+        # Clear inline buttons so the trade cannot be double-clicked
+        await query.edit_message_reply_markup(reply_markup=None)
+
+        if res.get("status") == "success":
+            confirm_msg = (
+                f"🚀 *ORDER EXECUTED IN MT5*\n\n"
+                f"• Symbol: `{symbol}` ({action})\n"
+                f"• Ticket ID: `{res.get('order_id')}`\n"
+                f"• Entry Fill: `{res.get('entry_price')}`\n"
+                f"• Lot Size: `{res.get('volume')}`\n"
+                f"• Stop Loss: `{res.get('sl')}`\n"
+                f"• Take Profit: `{res.get('tp')}`\n\n"
+                f"🛡 _Break-Even & Trailing Stop monitors activated._"
+            )
+            await query.message.reply_text(confirm_msg, parse_mode="Markdown")
+        else:
+            await query.message.reply_text(f"❌ *Trade Rejected by Broker:* {res.get('message', 'Unknown error')}", parse_mode="Markdown")
 
 async def cmd_closeall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not connect_mt5():
@@ -138,7 +222,7 @@ async def cmd_closeall(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "price": close_price,
             "deviation": 20,
             "magic": 1001,
-            "comment": "Panic Close All via Bot",
+            "comment": "Panic Close via Bot",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
@@ -154,7 +238,6 @@ async def cmd_closeall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=MAIN_KEYBOARD
     )
 
-# Text button router to handle persistent keyboard taps
 async def handle_button_press(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "📊 Live Account & PnL":

@@ -5,18 +5,26 @@ import asyncio
 import traceback
 from datetime import datetime, timezone, timedelta
 import MetaTrader5 as mt5
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from core.config import Config
 from core.logger import setup_system_logger
 from core.notifier import TelegramNotifier
 from core.mt5_connection import connect_mt5
 from run_live_engine import run_trading_cycle
-from telegram_bot import cmd_start, cmd_status, cmd_scan, cmd_closeall, cmd_positions, handle_button_press
+from telegram_bot import (
+    cmd_start,
+    cmd_status,
+    cmd_scan,
+    cmd_closeall,
+    cmd_positions,
+    handle_button_press,
+    handle_button_callback
+)
 
 log = setup_system_logger("MasterEngine")
 notifier = TelegramNotifier(bot_token=Config.TELEGRAM_BOT_TOKEN, chat_id=Config.TELEGRAM_CHAT_ID)
 
-# --- SCHEDULED BROADCASTS ---
+# --- SCHEDULED BROADCASTS (Sri Lanka Local Time) ---
 def morning_briefing():
     """Daily 08:30 LK Time Briefing."""
     if not connect_mt5():
@@ -30,7 +38,7 @@ def morning_briefing():
         f"• Account Balance: `${acc.balance:,.2f}`\n"
         f"• Available Equity: `${acc.equity:,.2f}`\n"
         f"• Active Positions: `{open_count}`\n\n"
-        "💡 _Autonomous scanners are checking the market every 5 minutes. Major volatility begins with London Open at 13:30._"
+        "💡 _Autonomous scanners are checking the market every 5 minutes. Major volume starts with London Open at 13:30._"
     )
     notifier.send_alert(msg)
 
@@ -48,7 +56,7 @@ def nightly_summary():
 
     if deals:
         for d in deals:
-            if d.entry == 1: # Closed position
+            if d.entry == 1:  # Deal closed
                 daily_pnl += d.profit
                 if d.profit > 0:
                     wins += 1
@@ -70,6 +78,7 @@ def nightly_summary():
     notifier.send_alert(msg)
 
 def alert_london_open():
+    """Alerts London session open at 13:30 LK time."""
     notifier.send_alert(
         "🇬🇧 *PRIME MARKET SESSION: LONDON OPEN* 🇬🇧\n\n"
         "• Time: 13:30 LK Time\n"
@@ -77,10 +86,11 @@ def alert_london_open():
     )
 
 def alert_ny_overlap():
+    """Alerts NY/London overlap peak session at 18:30 LK time."""
     notifier.send_alert(
         "🌟 *GOLDEN TRADING SESSION: NY/LONDON OVERLAP* 🌟\n\n"
         "• Time: 18:30 LK Time\n"
-        "• Peak liquidity of the 24-hour cycle across Forex and Crypto."
+        "• Peak liquidity across Forex and Crypto pairs."
     )
 
 def send_heartbeat():
@@ -88,27 +98,29 @@ def send_heartbeat():
     if connect_mt5():
         notifier.send_alert("💚 *System Heartbeat:* Headless MT5 connected. 24/7 background scanners operational.")
 
-# --- BACKGROUND WORKER ---
+# --- BACKGROUND ENGINE WORKER ---
 def execute_safe_cycle():
+    """Wrapper to run the asynchronous live trading cycle safely."""
     try:
         asyncio.run(run_trading_cycle())
     except Exception as e:
-        log.error(f"Error during cycle: {e}\n{traceback.format_exc()}")
+        log.error(f"Error during live cycle execution: {e}\n{traceback.format_exc()}")
 
 def scheduler_thread_worker():
+    """Runs continuous background schedule loops."""
     log.info("Continuous background scheduler active.")
     execute_safe_cycle()
 
     # Dynamic 5-minute autonomous scanning
     schedule.every(5).minutes.do(execute_safe_cycle)
 
-    # Daily session broadcasts (Sri Lanka Time)
+    # Session broadcasts (Sri Lanka Time)
     schedule.every().day.at("08:30").do(morning_briefing)
     schedule.every().day.at("13:30").do(alert_london_open)
     schedule.every().day.at("18:30").do(alert_ny_overlap)
     schedule.every().day.at("22:30").do(nightly_summary)
 
-    # 6-hour heartbeat
+    # Health check
     schedule.every(6).hours.do(send_heartbeat)
 
     while True:
@@ -118,19 +130,22 @@ def scheduler_thread_worker():
             log.error(f"Scheduler tick error: {e}")
         time.sleep(1)
 
-# --- BOT INTERFACE ---
+# --- TELEGRAM BOT INTERFACE ---
 def run_telegram_bot():
     app = ApplicationBuilder().token(Config.TELEGRAM_BOT_TOKEN).build()
 
-    # Commands
+    # Command handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("closeall", cmd_closeall))
     app.add_handler(CommandHandler("positions", cmd_positions))
 
-    # Persistent keyboard button text clicks
+    # Persistent thumb keyboard button handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_press))
+
+    # Inline button callback handler (for one-tap trade executions & dismissals)
+    app.add_handler(CallbackQueryHandler(handle_button_callback))
 
     app.run_polling()
 
@@ -139,6 +154,7 @@ if __name__ == "__main__":
     log.info("  AUTONOMOUS 24/7 TRADING ENGINE (HEADLESS MODE)")
     log.info("==================================================")
 
+    # Start the continuous background trading cycle in a daemon thread
     daemon_thread = threading.Thread(target=scheduler_thread_worker, daemon=True)
     daemon_thread.start()
 
@@ -146,11 +162,11 @@ if __name__ == "__main__":
         "🟢 *24/7 Trading System Live*\n"
         "• Mode: Headless Background\n"
         "• Scan frequency: Every 5 minutes\n"
-        "• Persistent keyboard active in Telegram."
+        "• Interactive execution buttons active in Telegram."
     )
 
     try:
         run_telegram_bot()
     except KeyboardInterrupt:
-        log.warning("Shutdown received.")
+        log.warning("Shutdown signal received.")
         notifier.send_alert("🔴 *Trading Engine Offline*")
