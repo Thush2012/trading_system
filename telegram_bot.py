@@ -18,9 +18,8 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "🤖 *Autonomous Market Intelligence Bot*\n\n"
-        "• Mode: Pure Cloud/API Feeds (Zero MT5 / Zero Laptop Lag)\n"
-        "• Monitored: Forex (EUR, GBP, JPY) & Crypto (BTC, ETH, SOL)\n"
-        "• Features: Multi-timeframe trend & momentum alerts\n\n"
+        "• Monitored Markets: 💱 Forex & 🪙 Crypto\n"
+        "• Mode: Zero-lag Lightweight Cloud Feeds\n\n"
         "Tap below to check live setups."
     )
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
@@ -29,9 +28,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "ℹ️ *SYSTEM HEALTH*\n"
         "• Engine: Active Standalone\n"
-        "• Market Data: Real-time Public Feeds\n"
-        "• Resource Load: < 1% CPU / Minimal RAM\n"
-        "• MT5 Dependencies: Disabled"
+        "• Market Data: Live Yahoo Finance Feeds\n"
+        "• Asset Coverage: Forex (EUR, GBP, JPY) + Crypto (BTC, ETH, SOL)"
     )
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
@@ -43,7 +41,7 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if report.empty:
         await update.message.reply_text(
-            "⚪ *Market Scan Complete:* No high-probability setups meeting ADX + 1H trend filter right now.",
+            "⚪ *Scan Complete:* No active Forex or Crypto setups right now.",
             parse_mode="Markdown",
             reply_markup=MAIN_KEYBOARD
         )
@@ -51,14 +49,15 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for _, row in report.iterrows():
         msg = (
-            f"⚡ *TRADE OPPORTUNITY IDENTIFIED*\n\n"
+            f"{row['icon']} *{row['asset_class'].upper()} OPPORTUNITY*\n\n"
+            f"• Market: *{row['asset_class']}*\n"
             f"• Symbol: *{row['symbol']}* ({row['timeframe']})\n"
             f"• Signal: *{row['action']}*\n"
             f"• Entry: `{row['entry']}`\n"
-            f"• Suggested Stop Loss: `{row['stop_loss']}`\n"
-            f"• Suggested Take Profit: `{row['take_profit']}`\n"
-            f"• RSI: `{row['rsi']}` | ADX: `{row.get('adx', 'N/A')}`\n\n"
-            f"💡 _Review chart and place manually on your preferred broker/exchange._"
+            f"• Stop Loss: `{row['stop_loss']}`\n"
+            f"• Take Profit: `{row['take_profit']}`\n"
+            f"• RSI: `{row['rsi']}`\n\n"
+            f"💡 _Ready for execution on your broker or exchange._"
         )
         await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
