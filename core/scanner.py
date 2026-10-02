@@ -1,101 +1,111 @@
-import pandas as pd
 import asyncio
-from core.data_fetcher import UnifiedDataFetcher
-from core.strategy import StrategyEngine
+import pandas as pd
+import numpy as np
+import yfinance as yf
+from core.logger import setup_system_logger
 
-class MultiTimeframeScanner:
-    def __init__(self, forex_symbols: list[str], crypto_symbols: list[str], timeframes: list[str] = None):
-        self.forex_symbols = forex_symbols
-        self.crypto_symbols = crypto_symbols
-        self.timeframes = timeframes or ["5m", "15m", "1h"]
-        self.fetcher = UnifiedDataFetcher()
-        self.strategy = StrategyEngine()
+log = setup_system_logger("MarketScanner")
 
-    def _determine_macro_bias(self, df_4h: pd.DataFrame) -> str:
-        if df_4h is None or len(df_4h) < 50:
-            return "ANY"
-        df_calc = self.strategy.calculate_indicators(df_4h)
-        latest_close = df_calc["close"].iloc[-1]
-        trend_ema = df_calc["ema_trend"].iloc[-1]
-        if pd.isna(trend_ema):
-            return "ANY"
-        return "BULLISH" if latest_close >= trend_ema else "BEARISH"
+class LightweightScanner:
+    """Standalone scanner with embedded indicators - no external strategy dependencies."""
 
-    def _detect_sudden_expansion(self, df: pd.DataFrame) -> bool:
-        """Flags explosive candle movement: candle range > 1.5x average ATR."""
-        if len(df) < 5 or "atr" not in df.columns:
-            return False
-        latest = df.iloc[-1]
-        candle_range = abs(latest["high"] - latest["low"])
-        avg_atr = latest["atr"]
-        return bool(candle_range >= (avg_atr * 1.4))
+    SYMBOL_MAP = {
+        "EURUSD": "EURUSD=X",
+        "GBPUSD": "GBPUSD=X",
+        "USDJPY": "USDJPY=X",
+        "BTCUSD": "BTC-USD",
+        "ETHUSD": "ETH-USD",
+        "SOLUSD": "SOL-USD"
+    }
+
+    def __init__(self, symbols=None):
+        self.symbols = symbols or ["EURUSD", "GBPUSD", "USDJPY", "BTCUSD", "ETHUSD", "SOLUSD"]
+
+    def fetch_ohlcv(self, symbol: str, interval: str = "15m", period: str = "5d") -> pd.DataFrame:
+        ticker = self.SYMBOL_MAP.get(symbol, symbol)
+        try:
+            df = yf.download(ticker, period=period, interval=interval, progress=False)
+            if df.empty:
+                return pd.DataFrame()
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df.rename(columns={
+                "Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"
+            })
+            return df[["open", "high", "low", "close", "volume"]].dropna()
+        except Exception as e:
+            log.error(f"Failed fetching {symbol}: {e}")
+            return pd.DataFrame()
+
+    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Computes EMA(20, 50), RSI(14), and ATR(14) using native pandas."""
+        df = df.copy()
+        
+        # EMAs
+        df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
+        df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+
+        # RSI 14
+        delta = df["close"].diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
+        avg_gain = gain.rolling(window=14, min_periods=14).mean()
+        avg_loss = loss.rolling(window=14, min_periods=14).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        df["rsi"] = 100 - (100 / (1 + rs))
+
+        # ATR 14
+        high_low = df["high"] - df["low"]
+        high_close = (df["high"] - df["close"].shift()).abs()
+        low_close = (df["low"] - df["close"].shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df["atr"] = tr.rolling(window=14, min_periods=14).mean()
+
+        return df
 
     async def scan_all(self) -> pd.DataFrame:
         results = []
+        loop = asyncio.get_event_loop()
 
-        # 1. FOREX
-        for symbol in self.forex_symbols:
-            try:
-                df_4h = self.fetcher.fetch_forex_candles(symbol, timeframe="4h", count=250)
-                macro_bias = self._determine_macro_bias(df_4h)
-            except Exception:
-                macro_bias = "ANY"
+        for sym in self.symbols:
+            df = await loop.run_in_executor(None, self.fetch_ohlcv, sym, "15m", "5d")
+            if df.empty or len(df) < 50:
+                continue
 
-            for tf in self.timeframes:
-                try:
-                    df = self.fetcher.fetch_forex_candles(symbol, timeframe=tf, count=100)
-                    analyzed = self.strategy.generate_signals(df, macro_bias=macro_bias)
-                    latest = analyzed.iloc[-1]
-                    sudden_expansion = self._detect_sudden_expansion(analyzed)
+            df = self.calculate_indicators(df)
+            latest = df.iloc[-1]
+            prev = df.iloc[-2]
 
-                    results.append({
-                        "asset_class": "FOREX",
-                        "symbol": symbol,
-                        "timeframe": tf,
-                        "macro_bias": macro_bias,
-                        "action": latest["action"],
-                        "entry": latest["entry_price"] if not pd.isna(latest["entry_price"]) else latest["close"],
-                        "stop_loss": latest["stop_loss"],
-                        "take_profit": latest["take_profit"],
-                        "rsi": round(latest["rsi"], 2),
-                        "atr": round(latest["atr"], 5) if "atr" in latest else 0.0,
-                        "is_sudden_surge": sudden_expansion
-                    })
-                except Exception:
-                    pass
+            close = float(latest["close"])
+            ema20 = float(latest["ema20"])
+            ema50 = float(latest["ema50"])
+            rsi = float(latest["rsi"]) if not np.isnan(latest["rsi"]) else 50.0
+            atr = float(latest["atr"]) if not np.isnan(latest["atr"]) else (close * 0.005)
 
-        # 2. CRYPTO
-        for symbol in self.crypto_symbols:
-            try:
-                df_4h = await self.fetcher.fetch_crypto_candles(symbol, timeframe="4h", count=250)
-                macro_bias = self._determine_macro_bias(df_4h)
-            except Exception:
-                macro_bias = "ANY"
+            action = "HOLD"
+            # Trend continuation condition
+            if ema20 > ema50 and 45 <= rsi <= 65 and latest["close"] > prev["close"]:
+                action = "🟢 BUY"
+                sl = close - (1.5 * atr)
+                tp = close + (2.5 * atr)
+            elif ema20 < ema50 and 35 <= rsi <= 55 and latest["close"] < prev["close"]:
+                action = "🔴 SELL"
+                sl = close + (1.5 * atr)
+                tp = close - (2.5 * atr)
 
-            for tf in self.timeframes:
-                try:
-                    df = await self.fetcher.fetch_crypto_candles(symbol, timeframe=tf, count=100)
-                    analyzed = self.strategy.generate_signals(df, macro_bias=macro_bias)
-                    latest = analyzed.iloc[-1]
-                    sudden_expansion = self._detect_sudden_expansion(analyzed)
-
-                    results.append({
-                        "asset_class": "CRYPTO",
-                        "symbol": symbol,
-                        "timeframe": tf,
-                        "macro_bias": macro_bias,
-                        "action": latest["action"],
-                        "entry": latest["entry_price"] if not pd.isna(latest["entry_price"]) else latest["close"],
-                        "stop_loss": latest["stop_loss"],
-                        "take_profit": latest["take_profit"],
-                        "rsi": round(latest["rsi"], 2),
-                        "atr": round(latest["atr"], 2) if "atr" in latest else 0.0,
-                        "is_sudden_surge": sudden_expansion
-                    })
-                except Exception:
-                    pass
+            if action != "HOLD":
+                results.append({
+                    "symbol": sym,
+                    "timeframe": "15m",
+                    "action": action,
+                    "entry": round(close, 5),
+                    "stop_loss": round(sl, 5),
+                    "take_profit": round(tp, 5),
+                    "rsi": round(rsi, 1),
+                    "adx": "N/A"
+                })
 
         return pd.DataFrame(results)
 
     async def close(self):
-        await self.fetcher.close()
+        pass
