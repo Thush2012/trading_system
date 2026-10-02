@@ -2,7 +2,9 @@ import threading
 import time
 import schedule
 import asyncio
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+import logging
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from core.config import Config
 from core.logger import setup_system_logger
 from core.notifier import TelegramNotifier
@@ -11,6 +13,14 @@ from telegram_bot import cmd_start, cmd_status, cmd_scan, handle_button_press
 
 log = setup_system_logger("MasterEngine")
 notifier = TelegramNotifier(bot_token=Config.TELEGRAM_BOT_TOKEN, chat_id=Config.TELEGRAM_CHAT_ID)
+
+# Ensure telegram logger outputs info to the terminal
+logging.getLogger("telegram").setLevel(logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Logs any errors triggered by Telegram updates."""
+    log.error(f"Telegram error: {context.error}")
 
 async def scan_and_broadcast():
     scanner = LightweightScanner()
@@ -34,7 +44,6 @@ def run_scheduled_scan():
         log.error(f"Scheduled scan error: {e}")
 
 def scheduler_worker():
-    # Scan every 15 minutes
     schedule.every(15).minutes.do(run_scheduled_scan)
     while True:
         schedule.run_pending()
@@ -42,11 +51,17 @@ def scheduler_worker():
 
 def run_bot():
     app = ApplicationBuilder().token(Config.TELEGRAM_BOT_TOKEN).build()
+
+    # Handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_press))
-    app.run_polling()
+    app.add_error_handler(error_handler)
+
+    log.info("Starting Telegram polling listener...")
+    # drop_pending_updates flushes queued messages from previous crashed sessions
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     log.info("Starting lightweight alert engine...")
