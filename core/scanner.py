@@ -7,7 +7,7 @@ from core.logger import setup_system_logger
 log = setup_system_logger("MarketScanner")
 
 class LightweightScanner:
-    """Standalone scanner with embedded indicators and asset-class classification."""
+    """Standalone scanner with multi-tier TP (TP1, TP2, TP3) and Binance-ready parameters."""
 
     FOREX_SYMBOLS = {
         "EURUSD": "EURUSD=X",
@@ -22,12 +22,18 @@ class LightweightScanner:
     }
 
     def __init__(self):
-        # Combined mapping
         self.market_map = {}
         for sym, ticker in self.FOREX_SYMBOLS.items():
             self.market_map[sym] = {"ticker": ticker, "asset_class": "Forex", "icon": "💱"}
         for sym, ticker in self.CRYPTO_SYMBOLS.items():
-            self.market_map[sym] = {"ticker": ticker, "asset_class": "Crypto", "icon": "🪙"}
+            # Standard Binance USDT contract symbol
+            binance_sym = sym.replace("USD", "USDT")
+            self.market_map[sym] = {
+                "ticker": ticker, 
+                "asset_class": "Crypto", 
+                "icon": "🪙",
+                "binance_symbol": binance_sym
+            }
 
     def fetch_ohlcv(self, ticker: str, interval: str = "15m", period: str = "5d") -> pd.DataFrame:
         try:
@@ -84,27 +90,38 @@ class LightweightScanner:
             atr = float(latest["atr"]) if not np.isnan(latest["atr"]) else (close * 0.005)
 
             action = "HOLD"
+            # Trend continuation logic
             if ema20 > ema50 and 45 <= rsi <= 65 and latest["close"] > prev["close"]:
-                action = "🟢 BUY"
+                action = "🟢 BUY / LONG"
                 sl = close - (1.5 * atr)
-                tp = close + (2.5 * atr)
+                tp1 = close + (1.0 * atr)   # Secure initial profits early
+                tp2 = close + (1.75 * atr)  # Mid-trend scale out
+                tp3 = close + (2.5 * atr)   # Final target
             elif ema20 < ema50 and 35 <= rsi <= 55 and latest["close"] < prev["close"]:
-                action = "🔴 SELL"
+                action = "🔴 SELL / SHORT"
                 sl = close + (1.5 * atr)
-                tp = close - (2.5 * atr)
+                tp1 = close - (1.0 * atr)
+                tp2 = close - (1.75 * atr)
+                tp3 = close - (2.5 * atr)
 
             if action != "HOLD":
+                decimals = 5 if meta["asset_class"] == "Forex" else 2
+                risk_pct = round(abs(close - sl) / close * 100, 2)
+
                 results.append({
                     "symbol": sym,
+                    "binance_symbol": meta.get("binance_symbol", sym),
                     "asset_class": meta["asset_class"],
                     "icon": meta["icon"],
                     "timeframe": "15m",
                     "action": action,
-                    "entry": round(close, 5 if meta["asset_class"] == "Forex" else 2),
-                    "stop_loss": round(sl, 5 if meta["asset_class"] == "Forex" else 2),
-                    "take_profit": round(tp, 5 if meta["asset_class"] == "Forex" else 2),
-                    "rsi": round(rsi, 1),
-                    "adx": "N/A"
+                    "entry": round(close, decimals),
+                    "stop_loss": round(sl, decimals),
+                    "tp1": round(tp1, decimals),
+                    "tp2": round(tp2, decimals),
+                    "tp3": round(tp3, decimals),
+                    "risk_pct": risk_pct,
+                    "rsi": round(rsi, 1)
                 })
 
         return pd.DataFrame(results)
