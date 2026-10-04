@@ -2,13 +2,13 @@ import asyncio
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from core.logger import setup_system_logger
 
-log = setup_system_logger("ProMarketScanner")
+log = setup_system_logger("ProScanner")
 
 class LightweightScanner:
-    """Institutional-grade scanner with Multi-Timeframe validation and 3-Tier TP."""
+    """Professional market scanner with cooldown tracking and entry range zones."""
 
     FOREX_PAIRS = {
         "EURUSD": "EURUSD=X",
@@ -33,6 +33,17 @@ class LightweightScanner:
                 "icon": "🪙",
                 "sym": sym.replace("USD", "USDT")
             }
+        
+        # In-memory cooldown dictionary: {symbol: last_alert_time}
+        self.last_alerts = {}
+
+    def is_cooling_down(self, sym: str, cooldown_hours: float = 2.0) -> bool:
+        """Prevents duplicate alerts on the same asset within cooldown window."""
+        now = datetime.now(timezone.utc)
+        if sym in self.last_alerts:
+            if now - self.last_alerts[sym] < timedelta(hours=cooldown_hours):
+                return True
+        return False
 
     def fetch_ohlcv(self, ticker: str, interval: str, period: str) -> pd.DataFrame:
         try:
@@ -51,10 +62,8 @@ class LightweightScanner:
 
     def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        # Fast & Medium EMAs
         df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
         df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
-        df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
 
         # 14-period RSI
         delta = df["close"].diff()
@@ -74,12 +83,20 @@ class LightweightScanner:
 
         return df
 
-    async def scan_all(self) -> pd.DataFrame:
+    async def scan_all(self, bypass_cooldown: bool = False) -> pd.DataFrame:
         results = []
         loop = asyncio.get_event_loop()
+        now_utc = datetime.now(timezone.utc)
 
         for sym, meta in self.market_map.items():
-            # 15m for entry, 1h for macro trend confirmation
+            # Apply anti-spam filter for background runs
+            if not bypass_cooldown and self.is_cooling_down(sym):
+                continue
+
+            # Skip Forex over weekends (market closed)
+            if meta["market"] == "FOREX" and now_utc.weekday() in [5, 6]:
+                continue
+
             df_15m = await loop.run_in_executor(None, self.fetch_ohlcv, meta["ticker"], "15m", "5d")
             df_1h = await loop.run_in_executor(None, self.fetch_ohlcv, meta["ticker"], "1h", "1mo")
 
@@ -99,22 +116,26 @@ class LightweightScanner:
             rsi = float(latest_15m["rsi"]) if not np.isnan(latest_15m["rsi"]) else 50.0
             atr = float(latest_15m["atr"]) if not np.isnan(latest_15m["atr"]) else (close * 0.005)
 
-            # Macro Trend Direction
+            # 1H Macro confirmation
             macro_bullish = latest_1h["close"] > latest_1h["ema50"]
             macro_bearish = latest_1h["close"] < latest_1h["ema50"]
 
             action = None
-            # High-probability Long Setup
+            entry_buffer = 0.2 * atr  # Range buffer for flexible execution
+
             if macro_bullish and ema20 > ema50 and (48 <= rsi <= 64) and latest_15m["close"] > prev_15m["close"]:
                 action = "BUY / LONG"
+                entry_low = close
+                entry_high = close + entry_buffer
                 sl = close - (1.5 * atr)
                 tp1 = close + (1.0 * atr)
                 tp2 = close + (1.8 * atr)
                 tp3 = close + (2.6 * atr)
 
-            # High-probability Short Setup
             elif macro_bearish and ema20 < ema50 and (36 <= rsi <= 52) and latest_15m["close"] < prev_15m["close"]:
                 action = "SELL / SHORT"
+                entry_high = close
+                entry_low = close - entry_buffer
                 sl = close + (1.5 * atr)
                 tp1 = close - (1.0 * atr)
                 tp2 = close - (1.8 * atr)
@@ -122,23 +143,26 @@ class LightweightScanner:
 
             if action:
                 decimals = 5 if meta["market"] == "FOREX" else 2
-                risk_distance = abs(close - sl)
-                risk_pct = round((risk_distance / close) * 100, 2)
+                risk_pct = round((abs(close - sl) / close) * 100, 2)
 
                 results.append({
                     "symbol": meta["sym"],
                     "asset_class": meta["market"],
                     "icon": meta["icon"],
                     "action": action,
-                    "entry": round(close, decimals),
+                    "entry_low": round(entry_low, decimals),
+                    "entry_high": round(entry_high, decimals),
                     "sl": round(sl, decimals),
                     "tp1": round(tp1, decimals),
                     "tp2": round(tp2, decimals),
                     "tp3": round(tp3, decimals),
                     "risk_pct": risk_pct,
                     "rsi": round(rsi, 1),
-                    "time": datetime.now(timezone.utc).strftime("%H:%M UTC")
+                    "time": now_utc.strftime("%H:%M UTC")
                 })
+
+                # Register alert timestamp
+                self.last_alerts[sym] = now_utc
 
         return pd.DataFrame(results)
 

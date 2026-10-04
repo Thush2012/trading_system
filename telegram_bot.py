@@ -6,75 +6,75 @@ from core.logger import setup_system_logger
 from core.scanner import LightweightScanner
 
 log = setup_system_logger("VIPTelegramBot")
+global_scanner = LightweightScanner()
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("⚡ Check Live Market Setups")],
-        [KeyboardButton("💎 VIP Channel Info"), KeyboardButton("📊 Strategy & Risk Guide")]
+        [KeyboardButton("⚡ Scan Live Setups")],
+        [KeyboardButton("📋 VIP Subscription Info"), KeyboardButton("📖 Risk Management Rules")]
     ],
     resize_keyboard=True
 )
 
 def format_vip_signal(row) -> str:
-    """Formats institutional-grade alerts suitable for VIP paid members."""
+    """Formats institutional-grade alerts with Entry Range zones."""
     is_crypto = row["asset_class"] == "CRYPTO"
     direction_badge = "🟢 LONG" if "BUY" in row["action"] else "🔴 SHORT"
 
     if is_crypto:
-        exchange_note = "Binance Futures (USDT-M) / Bybit"
-        leverage_note = "3x – 5x (Max 5x isolated recommended)"
-        size_note = "1% to 2% Max Portfolio Risk"
+        exchange_note = "Binance USDT-M / Bybit"
+        leverage_note = "3x – 5x Isolated"
+        size_note = "1% – 2% Max Risk"
     else:
-        exchange_note = "Standard MT4 / MT5 / cTrader Broker"
-        leverage_note = "1:50 to 1:200 Standard Forex"
+        exchange_note = "MT4 / MT5 Broker"
+        leverage_note = "1:50 – 1:200"
         size_note = "0.01 lot per $500–$1,000 Equity"
 
     msg = (
         f"═══════════════════════════\n"
-        f"💎 **VIP TRADE OPPORTUNITY** {row['icon']}\n"
+        f"💎 **VIP TRADE SIGNAL** {row['icon']}\n"
         f"═══════════════════════════\n\n"
         f"• **Asset:** `{row['symbol']}`\n"
         f"• **Market:** {row['asset_class']} ({exchange_note})\n"
-        f"• **Signal:** {direction_badge}\n"
-        f"• **Execution:** Market Order\n"
-        f"• **Time:** `{row['time']}`\n\n"
+        f"• **Direction:** {direction_badge}\n"
+        f"• **Signal Time:** `{row['time']}`\n\n"
         f"🎯 **PRICE LEVELS**\n"
-        f"┌ **Entry:** `{row['entry']}`\n"
-        f"├ 🛑 **Stop Loss:** `{row['sl']}` (Risk: `{row['risk_pct']}%`)\n"
-        f"├ 🥇 **TP1:** `{row['tp1']}`  *(R:R 1:1.0 | Close 40% & SL to Entry)*\n"
-        f"├ 🥈 **TP2:** `{row['tp2']}`  *(R:R 1:1.8 | Close 30%)*\n"
-        f"└ 🏆 **TP3:** `{row['tp3']}`  *(R:R 1:2.6 | Runner / Final 30%)*\n\n"
-        f"⚙️ **RISK & POSITION SIZING**\n"
+        f"┌ 🟢 **Entry Zone:** `{row['entry_low']}` – `{row['entry_high']}`\n"
+        f"├ 🛑 **Stop Loss:** `{row['sl']}`  *(Risk: {row['risk_pct']}%)*\n"
+        f"├ 🥇 **TP1:** `{row['tp1']}`  *(Close 40% & Move SL to Entry)*\n"
+        f"├ 🥈 **TP2:** `{row['tp2']}`  *(Close 30%)*\n"
+        f"└ 🏆 **TP3:** `{row['tp3']}`  *(Close final 30%)*\n\n"
+        f"⚙️ **EXECUTION GUIDELINES**\n"
         f"• **Leverage:** `{leverage_note}`\n"
-        f"• **Recommended Size:** `{size_note}`\n"
-        f"• **Momentum (RSI 14):** `{row['rsi']}`\n\n"
-        f"⚠️ _Trade with strict risk management. Never risk more than 2% per position._\n"
+        f"• **Position Sizing:** `{size_note}`\n"
+        f"• **Momentum RSI:** `{row['rsi']}`\n\n"
+        f"⚠️ _Enter within the Entry Zone. If price has already reached TP1, skip the trade._\n"
         f"═══════════════════════════"
     )
     return msg
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome = (
-        "💎 **Institutional Signal Intelligence Engine**\n\n"
-        "Delivering verified, high-probability algorithmic signals for Forex and Crypto.\n\n"
-        "• **Daily Average:** 2–4 verified setups\n"
-        "• **Execution:** Multi-target scale-outs (TP1, TP2, TP3)\n"
-        "• **Risk Standard:** Strict 1:1.8+ Average Risk-to-Reward\n\n"
-        "Use the menu below to query live opportunities."
+        "💎 **Institutional VIP Signal Service**\n\n"
+        "Algorithmic multi-timeframe signals built for consistent profitability.\n\n"
+        "• **Forex Pairs:** EURUSD, GBPUSD, USDJPY\n"
+        "• **Crypto Pairs:** BTCUSDT, ETHUSDT, SOLUSDT\n"
+        "• **Quality Standard:** Trend-filtered 3-Tier Take Profit\n\n"
+        "Use the buttons below to interact with the system."
     )
     await update.message.reply_text(welcome, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 *Scanning multi-timeframe liquidity and trend structures...*", parse_mode="Markdown")
+    await update.message.reply_text("🔍 *Scanning market liquidity and higher-timeframe structures...*", parse_mode="Markdown")
 
-    scanner = LightweightScanner()
-    report = await scanner.scan_all()
+    # Manual scans bypass the 2-hour anti-spam cooldown so you can test anytime
+    report = await global_scanner.scan_all(bypass_cooldown=True)
 
     if report.empty:
         await update.message.reply_text(
-            "⚪ **No Qualified Setups Right Now**\n\n"
-            "Current market conditions do not meet our multi-timeframe trend & momentum criteria. "
-            "Patience protects capital — awaiting next clean breakout.",
+            "⚪ **No Qualified Setups Active**\n\n"
+            "All assets currently fail our 1H trend alignment or momentum criteria. "
+            "Patience avoids consolidation traps.",
             parse_mode="Markdown",
             reply_markup=MAIN_KEYBOARD
         )
@@ -83,31 +83,32 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for _, row in report.iterrows():
         await update.message.reply_text(format_vip_signal(row), parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
-async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    info_text = (
-        "💎 **VIP MEMBERSHIP ADVANTAGES**\n\n"
-        "• **Price:** $15 / month (Introductory Tier)\n"
-        "• **Volume:** 2–4 selective setups per day\n"
-        "• **Coverage:** Major Forex (EUR, GBP, JPY) + Crypto (BTC, ETH, SOL)\n"
-        "• **Methodology:** Multi-timeframe trend filters + Volatility breakout scaling."
+async def cmd_sub_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "💎 **VIP SUBSCRIPTION PLAN**\n\n"
+        "• **Fee:** $15 / month (Introductory Price)\n"
+        "• **Delivery:** Direct Telegram VIP alerts with Entry Zones & 3 TPs\n"
+        "• **Frequency:** 2–4 verified, high-probability setups daily\n"
+        "• **Accepted Payment:** USDT (TRC20/BEP20), Binance Pay, or Card\n\n"
+        "Contact `@YourTelegramHandle` to activate your VIP access."
     )
-    await update.message.reply_text(info_text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
-async def cmd_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    guide_text = (
-        "📘 **PRO TRADE EXECUTION RULES**\n\n"
-        "1. **Never skip the Stop Loss:** Always set the exact SL when entering.\n"
-        "2. **The TP1 Rule:** Once price hits **TP1**, close 40% of the position and immediately move Stop Loss to your Entry price. The trade is now 100% risk-free.\n"
-        "3. **TP2 & TP3:** Let the remaining position ride to TP2 (close 30%) and TP3 (close final 30%).\n"
-        "4. **Capital Preservation:** Never risk more than 1–2% of your account on any single trade."
+async def cmd_risk_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rules = (
+        "📖 **VIP CAPITAL MANAGEMENT RULES**\n\n"
+        "1. **Entry Rule:** Only enter if the current market price is inside the specified Entry Zone.\n"
+        "2. **TP1 Trigger:** Once TP1 is achieved, lock in 40% profit and immediately move your Stop Loss to your entry price.\n"
+        "3. **TP2 & TP3:** Let the remaining 60% position run toward TP2 and TP3.\n"
+        "4. **Max Risk:** Never risk more than 1% to 2% of total account capital per trade."
     )
-    await update.message.reply_text(guide_text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+    await update.message.reply_text(rules, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
 async def handle_button_press(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = update.message.text
-    if txt == "⚡ Check Live Market Setups":
+    if txt == "⚡ Scan Live Setups":
         await cmd_scan(update, context)
-    elif txt == "💎 VIP Channel Info":
-        await cmd_info(update, context)
-    elif txt == "📊 Strategy & Risk Guide":
-        await cmd_guide(update, context)
+    elif txt == "📋 VIP Subscription Info":
+        await cmd_sub_info(update, context)
+    elif txt == "📖 Risk Management Rules":
+        await cmd_risk_rules(update, context)
