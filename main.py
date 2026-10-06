@@ -1,8 +1,10 @@
+import os
 import threading
 import time
 import schedule
 import asyncio
 import logging
+from telegram import Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from core.config import Config
 from core.logger import setup_system_logger
@@ -14,11 +16,16 @@ from telegram_bot import (
     cmd_risk_rules,
     handle_button_press,
     format_vip_signal,
+    format_filtered_partner_signal,
     global_scanner
 )
 
 log = setup_system_logger("MasterEngine")
 notifier = TelegramNotifier(bot_token=Config.TELEGRAM_BOT_TOKEN, chat_id=Config.TELEGRAM_CHAT_ID)
+
+# Target chat/channel ID for your friend or clients
+PARTNER_CHAT_ID = os.getenv("PARTNER_CHAT_ID")
+standalone_bot = Bot(token=Config.TELEGRAM_BOT_TOKEN)
 
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -27,12 +34,26 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     log.error(f"Telegram polling error: {context.error}")
 
 async def broadcast_live_setups():
-    # Regular 15-minute background run obeys cooldowns (no spam)
+    """Scans markets and dispatches dual-format alerts."""
     report = await global_scanner.scan_all(bypass_cooldown=False)
     if not report.empty:
         for _, row in report.iterrows():
-            msg = format_vip_signal(row)
-            notifier.send_alert(msg)
+            # 1. Deliver full master signal to your private admin chat
+            admin_msg = format_vip_signal(row)
+            notifier.send_alert(admin_msg)
+
+            # 2. Deliver filtered signal (TP1 & TP2 only) to your partner/clients
+            if PARTNER_CHAT_ID:
+                try:
+                    client_msg = format_filtered_partner_signal(row)
+                    await standalone_bot.send_message(
+                        chat_id=PARTNER_CHAT_ID,
+                        text=client_msg,
+                        parse_mode="Markdown"
+                    )
+                    log.info(f"Filtered signal for {row['symbol']} sent to partner/client channel.")
+                except Exception as ex:
+                    log.error(f"Failed sending filtered signal to partner: {ex}")
 
 def scheduled_job():
     try:
@@ -41,6 +62,7 @@ def scheduled_job():
         log.error(f"Background broadcast error: {e}")
 
 def scheduler_thread():
+    # Runs the autonomous scan every 15 minutes
     schedule.every(15).minutes.do(scheduled_job)
     while True:
         try:
@@ -63,16 +85,16 @@ def run_bot():
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    log.info("Launching VIP Commercial Signal Service...")
+    log.info("Launching Dual-Delivery VIP Signal Engine...")
 
     t = threading.Thread(target=scheduler_thread, daemon=True)
     t.start()
 
     notifier.send_alert(
-        "💎 **VIP Commercial Signal Engine Online**\n\n"
-        "• Anti-Spam Cooldown: 2 Hours per Pair\n"
-        "• Flexible Entry Zones: Active\n"
-        "• 3-Tier Take Profit Scale-Outs: Enabled"
+        "💎 **Dual-Delivery Signal Engine Online**\n\n"
+        "• Admin Channel: Full Master Metrics (TP1, TP2, TP3)\n"
+        f"• Partner/Client Delivery: {'Configured ✅' if PARTNER_CHAT_ID else 'Awaiting PARTNER_CHAT_ID ⚠️'}\n"
+        "• Client Format: Compressed (Entry Range, SL, TP1 & TP2 only)"
     )
 
     run_bot()
