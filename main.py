@@ -4,10 +4,6 @@ import time
 import schedule
 import asyncio
 import logging
-from dotenv import load_dotenv
-
-load_dotenv()
-
 from telegram import Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from core.config import Config
@@ -26,50 +22,43 @@ from telegram_bot import (
 
 log = setup_system_logger("MasterEngine")
 
-# Master Admin Notifier
+# Master admin notifier (Bot 1)
 notifier = TelegramNotifier(bot_token=Config.TELEGRAM_BOT_TOKEN, chat_id=Config.TELEGRAM_CHAT_ID)
 
-# Single Bot instance for dispatching messages
-bot_instance = Bot(token=Config.TELEGRAM_BOT_TOKEN)
+# Client / Partner dispatch bot (Bot 2)
+PARTNER_BOT_TOKEN = os.getenv("PARTNER_BOT_TOKEN")
+PARTNER_CHAT_ID = os.getenv("PARTNER_CHAT_ID")
 
-# Parse list of friend chat IDs from .env
-raw_subscribers = os.getenv("SUBSCRIBER_CHAT_IDS", "")
-SUBSCRIBER_LIST = [cid.strip() for cid in raw_subscribers.split(",") if cid.strip()]
+partner_bot = Bot(token=PARTNER_BOT_TOKEN) if PARTNER_BOT_TOKEN else None
 
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    log.error(f"Telegram polling error: {context.error}")
+    """Logs unexpected exceptions in the Telegram polling handler."""
+    log.error(f"Telegram polling error encountered: {context.error}")
 
-async def dispatch_signals():
-    """
-    1. Sends full Master Signal to Admin first.
-    2. Automatically sends compressed (TP1 & TP2) signal to selected friends.
-    """
+async def broadcast_live_setups():
+    """Scans markets and dispatches signals across both bot channels."""
     report = await global_scanner.scan_all(bypass_cooldown=False)
-    if report.empty:
-        return
+    if not report.empty:
+        for _, row in report.iterrows():
+            # 1. Deliver comprehensive master signal to your private admin bot
+            admin_msg = format_vip_signal(row)
+            notifier.send_alert(admin_msg)
 
-    for _, row in report.iterrows():
-        # --- 1. SEND MASTER SIGNAL TO YOU FIRST ---
-        admin_msg = format_vip_signal(row)
-        notifier.send_alert(admin_msg)
-        log.info(f"Master signal dispatched to Admin for {row['symbol']}.")
-
-        # --- 2. SEND REDUCED SIGNAL TO FRIENDS / SUBSCRIBERS ---
-        if SUBSCRIBER_LIST:
-            client_msg = format_filtered_partner_signal(row)
-            for friend_id in SUBSCRIBER_LIST:
+            # 2. Deliver filtered signal (TP1 & TP2 only) to your partner / client channel
+            if partner_bot and PARTNER_CHAT_ID:
                 try:
-                    await bot_instance.send_message(
-                        chat_id=friend_id,
+                    client_msg = format_filtered_partner_signal(row)
+                    await partner_bot.send_message(
+                        chat_id=PARTNER_CHAT_ID,
                         text=client_msg,
                         parse_mode="Markdown"
                     )
-                    log.info(f"Reduced signal for {row['symbol']} delivered to subscriber {friend_id}.")
+                    log.info(f"Filtered signal for {row['symbol']} posted to client channel.")
                 except Exception as ex:
-                    log.error(f"Failed delivering to subscriber {friend_id}: {ex}")
+                    log.error(f"Failed delivering filtered signal via secondary bot: {ex}")
 
 def scheduled_job():
     try:
@@ -78,7 +67,7 @@ def scheduled_job():
         log.error(f"Scheduled scan failure: {e}")
 
 def scheduler_thread():
-    # Scans every 15 minutes automatically
+    """Background worker running market scans every 15 minutes."""
     schedule.every(15).minutes.do(scheduled_job)
     while True:
         try:
@@ -101,16 +90,19 @@ def run_bot():
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    log.info("Starting Single-Bot Dual-Market Signal Engine...")
+    log.info("==================================================")
+    log.info("   DUAL-DELIVERY COMMERCIAL SIGNAL SYSTEM LIVE    ")
+    log.info("==================================================")
 
     t = threading.Thread(target=scheduler_thread, daemon=True)
     t.start()
 
     notifier.send_alert(
-        "💎 **Dual-Market Trade Engine Online**\n\n"
-        "• Primary Receiver: Admin (Master Analytics + TP3)\n"
-        f"• Connected Subscribers: {len(SUBSCRIBER_LIST)} recipient(s)\n"
-        "• Filter: Automatically sending reduced version (TP1 & TP2 only)"
+        "💎 **Dual-Delivery Engine Online**\n\n"
+        "• Master Admin Feed: Active (Full Metrics)\n"
+        f"• Client / Partner Bot: {secondary_status}\n"
+        "• Scan Frequency: Every 15 minutes\n"
+        "• Anti-Spam Cooldown: 2 Hours per Pair"
     )
 
     run_bot()
