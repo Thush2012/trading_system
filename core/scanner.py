@@ -8,7 +8,7 @@ from core.logger import setup_system_logger
 log = setup_system_logger("ProScanner")
 
 class LightweightScanner:
-    """Professional market scanner with cooldown tracking and entry range zones."""
+    """Responsive scanner with balanced technical filters and detailed debug diagnostics."""
 
     FOREX_PAIRS = {
         "EURUSD": "EURUSD=X",
@@ -34,18 +34,16 @@ class LightweightScanner:
                 "sym": sym.replace("USD", "USDT")
             }
         
-        # In-memory cooldown dictionary: {symbol: last_alert_time}
         self.last_alerts = {}
 
     def is_cooling_down(self, sym: str, cooldown_hours: float = 2.0) -> bool:
-        """Prevents duplicate alerts on the same asset within cooldown window."""
         now = datetime.now(timezone.utc)
         if sym in self.last_alerts:
             if now - self.last_alerts[sym] < timedelta(hours=cooldown_hours):
                 return True
         return False
 
-    def fetch_ohlcv(self, ticker: str, interval: str, period: str) -> pd.DataFrame:
+    def fetch_ohlcv(self, ticker: str, interval: str = "15m", period: str = "5d") -> pd.DataFrame:
         try:
             df = yf.download(ticker, period=period, interval=interval, progress=False)
             if df.empty:
@@ -89,41 +87,35 @@ class LightweightScanner:
         now_utc = datetime.now(timezone.utc)
 
         for sym, meta in self.market_map.items():
-            # Apply anti-spam filter for background runs
             if not bypass_cooldown and self.is_cooling_down(sym):
+                log.info(f"Skipping {sym} (Cooling down)")
                 continue
 
-            # Skip Forex over weekends (market closed)
+            # Skip Forex only during weekends
             if meta["market"] == "FOREX" and now_utc.weekday() in [5, 6]:
                 continue
 
-            df_15m = await loop.run_in_executor(None, self.fetch_ohlcv, meta["ticker"], "15m", "5d")
-            df_1h = await loop.run_in_executor(None, self.fetch_ohlcv, meta["ticker"], "1h", "1mo")
+            df = await loop.run_in_executor(None, self.fetch_ohlcv, meta["ticker"], "15m", "5d")
 
-            if df_15m.empty or len(df_15m) < 60 or df_1h.empty or len(df_1h) < 60:
+            if df.empty or len(df) < 30:
+                log.warning(f"Insufficient data for {sym} (rows: {len(df)})")
                 continue
 
-            df_15m = self.calculate_technical_indicators(df_15m)
-            df_1h = self.calculate_technical_indicators(df_1h)
+            df = self.calculate_technical_indicators(df)
+            latest = df.iloc[-1]
 
-            latest_15m = df_15m.iloc[-1]
-            prev_15m = df_15m.iloc[-2]
-            latest_1h = df_1h.iloc[-1]
+            close = float(latest["close"])
+            ema20 = float(latest["ema20"])
+            ema50 = float(latest["ema50"])
+            rsi = float(latest["rsi"]) if not np.isnan(latest["rsi"]) else 50.0
+            atr = float(latest["atr"]) if not np.isnan(latest["atr"]) else (close * 0.005)
 
-            close = float(latest_15m["close"])
-            ema20 = float(latest_15m["ema20"])
-            ema50 = float(latest_15m["ema50"])
-            rsi = float(latest_15m["rsi"]) if not np.isnan(latest_15m["rsi"]) else 50.0
-            atr = float(latest_15m["atr"]) if not np.isnan(latest_15m["atr"]) else (close * 0.005)
-
-            # 1H Macro confirmation
-            macro_bullish = latest_1h["close"] > latest_1h["ema50"]
-            macro_bearish = latest_1h["close"] < latest_1h["ema50"]
-
+            # Balanced trend-following criteria
             action = None
-            entry_buffer = 0.2 * atr  # Range buffer for flexible execution
+            entry_buffer = 0.25 * atr
 
-            if macro_bullish and ema20 > ema50 and (48 <= rsi <= 64) and latest_15m["close"] > prev_15m["close"]:
+            # Bullish trend: EMA20 above EMA50, healthy RSI momentum (above 48, not overbought > 70)
+            if ema20 > ema50 and 48 <= rsi <= 70:
                 action = "BUY / LONG"
                 entry_low = close
                 entry_high = close + entry_buffer
@@ -132,7 +124,8 @@ class LightweightScanner:
                 tp2 = close + (1.8 * atr)
                 tp3 = close + (2.6 * atr)
 
-            elif macro_bearish and ema20 < ema50 and (36 <= rsi <= 52) and latest_15m["close"] < prev_15m["close"]:
+            # Bearish trend: EMA20 below EMA50, healthy RSI momentum (below 52, not oversold < 30)
+            elif ema20 < ema50 and 30 <= rsi <= 52:
                 action = "SELL / SHORT"
                 entry_high = close
                 entry_low = close - entry_buffer
@@ -140,6 +133,8 @@ class LightweightScanner:
                 tp1 = close - (1.0 * atr)
                 tp2 = close - (1.8 * atr)
                 tp3 = close - (2.6 * atr)
+
+            log.info(f"[{sym}] Close: {close:.4f} | EMA20: {ema20:.4f} | EMA50: {ema50:.4f} | RSI: {rsi:.1f} -> {action or 'NEUTRAL'}")
 
             if action:
                 decimals = 5 if meta["market"] == "FOREX" else 2
@@ -161,7 +156,6 @@ class LightweightScanner:
                     "time": now_utc.strftime("%H:%M UTC")
                 })
 
-                # Register alert timestamp
                 self.last_alerts[sym] = now_utc
 
         return pd.DataFrame(results)
