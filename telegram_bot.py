@@ -8,10 +8,11 @@ from core.scanner import LightweightScanner
 log = setup_system_logger("TelegramBot")
 global_scanner = LightweightScanner()
 
+# Unified keyboard matching your Telegram interface
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("⚡ Scan Live Setups")],
-        [KeyboardButton("ℹ️ System Health"), KeyboardButton("📖 Risk Rules")]
+        [KeyboardButton("⚡ Scan Market Opportunities")],
+        [KeyboardButton("ℹ️ System Status"), KeyboardButton("📖 Risk Rules")]
     ],
     resize_keyboard=True
 )
@@ -58,10 +59,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = (
         "ℹ️ **SYSTEM HEALTH**\n"
-        "• Background Scheduler: Active (Every 15 min)\n"
-        "• Feeds: Public Yahoo/Crypto Streams (MT5 Free)\n"
-        "• Target Scale-Out: TP1, TP2, TP3 Active\n"
-        "• Message Dispatch: Direct Admin Only"
+        "• Engine: Active Standalone\n"
+        "• Scheduler: Running every 15 minutes\n"
+        "• Pairs: EURUSD, GBPUSD, USDJPY, BTCUSDT, ETHUSDT, SOLUSDT\n"
+        "• Dispatch: Direct Alert Mode"
     )
     await update.message.reply_text(status_msg, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
@@ -95,10 +96,17 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Scan error: `{e}`", parse_mode="Markdown")
 
 async def handle_button_press(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = update.message.text
-    if txt == "⚡ Scan Live Setups":
+    text = update.message.text.strip()
+    
+    # Matches both variations so old or new buttons work seamlessly
+    if "Scan" in text:
         await cmd_scan(update, context)
-    elif txt == "ℹ️ System Health":
+    elif "Status" in text or "Health" in text:
         await cmd_status(update, context)
-    elif txt == "📖 Risk Rules":
+    elif "Risk" in text or "Rules" in text:
         await cmd_risk_rules(update, context)
+    else:
+        await update.message.reply_text(
+            "Use the menu buttons below to interact:",
+            reply_markup=MAIN_KEYBOARD
+        )
