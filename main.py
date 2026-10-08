@@ -19,20 +19,15 @@ from telegram_bot import (
     cmd_status,
     cmd_risk_rules,
     handle_button_press,
-    format_master_signal,
-    format_reduced_client_signal,
+    format_signal_message,
     global_scanner
 )
 
 log = setup_system_logger("MasterEngine")
 
-# Single bot instance used for listening and broadcasting
+# Single bot instance delivering strictly to you
 bot = Bot(token=Config.TELEGRAM_BOT_TOKEN)
 ADMIN_CHAT_ID = Config.TELEGRAM_CHAT_ID
-
-# Parse comma-separated list of friend/client IDs
-recipients_raw = os.getenv("CLIENT_RECIPIENTS", "")
-CLIENT_LIST = [cid.strip() for cid in recipients_raw.split(",") if cid.strip()]
 
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -41,26 +36,16 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     log.error(f"Telegram polling error: {context.error}")
 
 async def broadcast_live_setups():
-    """Scans markets and dispatches signals: full to Admin, reduced to friends."""
+    """Runs periodic scans and pushes setups directly to your chat."""
     report = await global_scanner.scan_all(bypass_cooldown=False)
     if not report.empty:
         for _, row in report.iterrows():
-            # 1. Send full institutional signal to you (Admin)
-            master_msg = format_master_signal(row)
+            msg = format_signal_message(row)
             try:
-                await bot.send_message(chat_id=ADMIN_CHAT_ID, text=master_msg, parse_mode="Markdown")
+                await bot.send_message(chat_id=ADMIN_CHAT_ID, text=msg, parse_mode="Markdown")
+                log.info(f"Signal for {row['symbol']} delivered to admin.")
             except Exception as e:
-                log.error(f"Failed sending master alert to admin: {e}")
-
-            # 2. Automatically dispatch reduced signal (TP1 & TP2 only) to friends
-            if CLIENT_LIST:
-                reduced_msg = format_reduced_client_signal(row)
-                for client_id in CLIENT_LIST:
-                    try:
-                        await bot.send_message(chat_id=client_id, text=reduced_msg, parse_mode="Markdown")
-                        log.info(f"Reduced signal for {row['symbol']} delivered to client: {client_id}")
-                    except Exception as ex:
-                        log.error(f"Failed delivering to client {client_id}: {ex}")
+                log.error(f"Failed delivering alert: {e}")
 
 def scheduled_job():
     try:
@@ -69,7 +54,7 @@ def scheduled_job():
         log.error(f"Scheduled scan failure: {e}")
 
 def scheduler_thread():
-    # Automatically scan every 15 minutes
+    # Scan every 15 minutes
     schedule.every(15).minutes.do(scheduled_job)
     while True:
         try:
@@ -88,12 +73,12 @@ def run_bot():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_press))
     app.add_error_handler(error_handler)
 
-    log.info("Master Engine listening for Telegram interactions...")
+    log.info("Dual Market Trade Engine listening...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     log.info("==================================================")
-    log.info("        DUAL MARKET TRADE ENGINE (MASTER)         ")
+    log.info("        DUAL MARKET TRADE ENGINE (DIRECT)         ")
     log.info("==================================================")
 
     # Launch background scheduler
@@ -103,10 +88,9 @@ if __name__ == "__main__":
     async def notify_boot():
         startup_text = (
             "💎 **Dual Market Trade Engine Online**\n\n"
-            "• Mode: Standalone Master Engine\n"
-            f"• Client Recipient Count: `{len(CLIENT_LIST)}`\n"
+            "• Mode: Standalone Direct Alert Terminal\n"
             "• Auto Scan: Active Every 15 Minutes\n"
-            "• Reduced Forwarding (TP1 & TP2): Enabled"
+            "• Exits: TP1, TP2, TP3 Multi-Target Enabled"
         )
         try:
             await bot.send_message(chat_id=ADMIN_CHAT_ID, text=startup_text, parse_mode="Markdown")
