@@ -1,15 +1,11 @@
 import os
+import logging
 from dotenv import load_dotenv
 
 # Load .env variables immediately
 load_dotenv()
 
-import threading
-import time
-import schedule
-import asyncio
-import logging
-from telegram import Bot
+from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from core.config import Config
 from core.logger import setup_system_logger
@@ -24,48 +20,65 @@ from telegram_bot import (
 )
 
 log = setup_system_logger("MasterEngine")
-
-# Single bot instance delivering strictly to you
-bot = Bot(token=Config.TELEGRAM_BOT_TOKEN)
 ADMIN_CHAT_ID = Config.TELEGRAM_CHAT_ID
 
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    log.error(f"Telegram polling error: {context.error}")
+    """Logs any polling or runtime errors."""
+    log.error(f"Telegram error encountered: {context.error}")
 
-async def broadcast_live_setups():
-    """Runs periodic scans and pushes setups directly to your chat."""
-    report = await global_scanner.scan_all(bypass_cooldown=False)
-    if not report.empty:
-        for _, row in report.iterrows():
-            msg = format_signal_message(row)
-            try:
-                await bot.send_message(chat_id=ADMIN_CHAT_ID, text=msg, parse_mode="Markdown")
-                log.info(f"Signal for {row['symbol']} delivered to admin.")
-            except Exception as e:
-                log.error(f"Failed delivering alert: {e}")
-
-def scheduled_job():
+async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
+    """Background scanner executed automatically by Telegram's JobQueue."""
     try:
-        asyncio.run(broadcast_live_setups())
+        log.info("Running automated 15-minute background market scan...")
+        report = await global_scanner.scan_all(bypass_cooldown=False)
+        if not report.empty:
+            for _, row in report.iterrows():
+                msg = format_signal_message(row)
+                await context.bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=msg,
+                    parse_mode="Markdown"
+                )
+                log.info(f"Signal for {row['symbol']} delivered to admin.")
     except Exception as e:
-        log.error(f"Scheduled scan failure: {e}")
+        log.error(f"Automated scan failure: {e}")
 
-def scheduler_thread():
-    # Scan every 15 minutes
-    schedule.every(15).minutes.do(scheduled_job)
-    while True:
-        try:
-            schedule.run_pending()
-        except Exception as e:
-            log.error(f"Scheduler tick error: {e}")
-        time.sleep(1)
+async def post_init_hook(application):
+    """Runs inside the bot's own event loop right after initialization."""
+    log.info("Master bot connected. Dispatching boot alert...")
+    startup_text = (
+        "💎 **Dual Market Trade Engine Online**\n\n"
+        "• Mode: Standalone Direct Alert Terminal\n"
+        "• Auto Scan: Active Every 15 Minutes\n"
+        "• Exits: TP1, TP2, TP3 Multi-Target Enabled\n"
+        "• Listener: Ready for commands"
+    )
+    try:
+        await application.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=startup_text,
+            parse_mode="Markdown"
+        )
+    except Exception as ex:
+        log.error(f"Could not send boot alert: {ex}")
 
-def run_bot():
-    app = ApplicationBuilder().token(Config.TELEGRAM_BOT_TOKEN).build()
+def main():
+    log.info("==================================================")
+    log.info("        DUAL MARKET TRADE ENGINE (DIRECT)         ")
+    log.info("==================================================")
 
+    # Build Application
+    app = (
+        ApplicationBuilder()
+        .token(Config.TELEGRAM_BOT_TOKEN)
+        .post_init(post_init_hook)
+        .build()
+    )
+
+    # Register Command & Message Handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("status", cmd_status))
@@ -73,29 +86,17 @@ def run_bot():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_press))
     app.add_error_handler(error_handler)
 
-    log.info("Dual Market Trade Engine listening...")
+    # Schedule 15-minute background scans using built-in JobQueue
+    if app.job_queue:
+        app.job_queue.run_repeating(
+            scheduled_scan_job,
+            interval=900,  # 900 seconds = 15 minutes
+            first=60       # First scan runs 60 seconds after startup
+        )
+        log.info("15-minute background scan scheduled successfully.")
+
+    log.info("Dual Market Trade Engine listening for updates...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    log.info("==================================================")
-    log.info("        DUAL MARKET TRADE ENGINE (DIRECT)         ")
-    log.info("==================================================")
-
-    # Launch background scheduler
-    t = threading.Thread(target=scheduler_thread, daemon=True)
-    t.start()
-
-    async def notify_boot():
-        startup_text = (
-            "💎 **Dual Market Trade Engine Online**\n\n"
-            "• Mode: Standalone Direct Alert Terminal\n"
-            "• Auto Scan: Active Every 15 Minutes\n"
-            "• Exits: TP1, TP2, TP3 Multi-Target Enabled"
-        )
-        try:
-            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=startup_text, parse_mode="Markdown")
-        except Exception as ex:
-            log.error(f"Could not send boot alert: {ex}")
-
-    asyncio.run(notify_boot())
-    run_bot()
+    main()
