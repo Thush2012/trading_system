@@ -1,4 +1,9 @@
 import os
+from dotenv import load_dotenv
+
+# Force-load .env tokens into process memory
+load_dotenv()
+
 import threading
 import time
 import schedule
@@ -40,7 +45,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def broadcast_live_setups():
     """Scans markets and dispatches signals across both bot channels."""
-    # Scheduled scans strictly adhere to the 2-hour symbol cooldown
     report = await global_scanner.scan_all(bypass_cooldown=False)
     if not report.empty:
         for _, row in report.iterrows():
@@ -82,16 +86,11 @@ def run_bot():
     """Initializes and runs the primary interactive Telegram bot."""
     app = ApplicationBuilder().token(Config.TELEGRAM_BOT_TOKEN).build()
 
-    # Register command callbacks
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("vip", cmd_sub_info))
     app.add_handler(CommandHandler("rules", cmd_risk_rules))
-
-    # Register custom keyboard buttons
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_press))
-
-    # Register error callback
     app.add_error_handler(error_handler)
 
     log.info("Primary Telegram bot listener active...")
@@ -102,7 +101,6 @@ if __name__ == "__main__":
     log.info("   DUAL-DELIVERY COMMERCIAL SIGNAL SYSTEM LIVE    ")
     log.info("==================================================")
 
-    # Launch autonomous scanner thread
     t = threading.Thread(target=scheduler_thread, daemon=True)
     t.start()
 
