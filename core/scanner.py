@@ -7,8 +7,19 @@ from core.logger import setup_system_logger
 
 log = setup_system_logger("HighAccuracyScanner")
 
+def get_market_session(utc_hour: int) -> str:
+    """Determines the active global institutional session and liquidity status."""
+    if 7 <= utc_hour < 12:
+        return "🇬🇧 London Session (High Volume)"
+    elif 12 <= utc_hour < 16:
+        return "🔥 London / NY Overlap (Peak Liquidity)"
+    elif 16 <= utc_hour < 21:
+        return "🇺🇸 New York Session (Expansion)"
+    else:
+        return "🌏 Asian Session (Consolidation / Crypto Focus)"
+
 class LightweightScanner:
-    """Institutional-grade scanner with 200 EMA macro filter, ADX momentum gate, and Volume expansion."""
+    """Scanner featuring 200 EMA macro filter, ADX momentum gate, session timing, and setup classification."""
 
     FOREX_PAIRS = {
         "EURUSD": "EURUSD=X",
@@ -37,6 +48,7 @@ class LightweightScanner:
         self.last_alerts = {}
 
     def is_cooling_down(self, sym: str, cooldown_hours: float = 2.0) -> bool:
+        """Enforces a 2-hour anti-spam cooldown per symbol."""
         now = datetime.now(timezone.utc)
         if sym in self.last_alerts:
             if now - self.last_alerts[sym] < timedelta(hours=cooldown_hours):
@@ -44,6 +56,7 @@ class LightweightScanner:
         return False
 
     def fetch_ohlcv(self, ticker: str, interval: str = "15m", period: str = "7d") -> pd.DataFrame:
+        """Fetches OHLCV data using public Yahoo Finance streams."""
         try:
             df = yf.download(ticker, period=period, interval=interval, progress=False)
             if df.empty:
@@ -59,9 +72,10 @@ class LightweightScanner:
             return pd.DataFrame()
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculates EMA 20/50/200, RSI 14, ATR 14, and ADX 14."""
         df = df.copy()
 
-        # Multi-tier EMAs
+        # Multi-timeframe EMAs
         df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
         df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
         df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
@@ -82,7 +96,7 @@ class LightweightScanner:
         tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
         df["atr"] = tr.rolling(window=14, min_periods=14).mean()
 
-        # ADX (14) - Measures pure trend strength (avoids chop)
+        # ADX (14)
         plus_dm = df["high"].diff()
         minus_dm = -df["low"].diff()
         plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
@@ -97,6 +111,7 @@ class LightweightScanner:
         return df
 
     async def scan_all(self, bypass_cooldown: bool = False) -> pd.DataFrame:
+        """Executes full market scan across Forex and Crypto."""
         results = []
         loop = asyncio.get_event_loop()
         now_utc = datetime.now(timezone.utc)
@@ -113,7 +128,7 @@ class LightweightScanner:
             df = await loop.run_in_executor(None, self.fetch_ohlcv, meta["ticker"], "15m", "7d")
 
             if df.empty or len(df) < 205:
-                log.warning(f"Insufficient candles for {sym} (Rows: {len(df)}/205 required for 200 EMA)")
+                log.warning(f"Insufficient candles for {sym} ({len(df)}/205 required for 200 EMA)")
                 continue
 
             df = self.calculate_indicators(df)
@@ -157,11 +172,24 @@ class LightweightScanner:
                 decimals = 5 if meta["market"] == "FOREX" else 2
                 risk_pct = round((abs(close - sl) / close) * 100, 2)
 
+                # Classify setup type & expected duration
+                if adx >= 28:
+                    setup_type = "⚡ QUICK MOMENTUM SCALP"
+                    duration_est = "15m – 45m"
+                else:
+                    setup_type = "📈 TREND EXPANSION RUNNER"
+                    duration_est = "1h – 4h"
+
+                session_info = get_market_session(now_utc.hour)
+
                 results.append({
                     "symbol": meta["sym"],
                     "asset_class": meta["market"],
                     "icon": meta["icon"],
                     "action": action,
+                    "setup_type": setup_type,
+                    "duration": duration_est,
+                    "session": session_info,
                     "entry_low": round(entry_low, decimals),
                     "entry_high": round(entry_high, decimals),
                     "sl": round(sl, decimals),

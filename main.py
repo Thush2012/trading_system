@@ -2,7 +2,7 @@ import os
 import logging
 from dotenv import load_dotenv
 
-# Load .env variables immediately
+# Load environment variables
 load_dotenv()
 
 from telegram import Update
@@ -13,6 +13,7 @@ from telegram_bot import (
     cmd_start,
     cmd_scan,
     cmd_status,
+    cmd_trading_hours,
     cmd_risk_rules,
     handle_button_press,
     format_signal_message,
@@ -26,11 +27,11 @@ logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """Logs any polling or runtime errors."""
+    """Logs unexpected exceptions from polling or job queue."""
     log.error(f"Telegram error encountered: {context.error}")
 
 async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
-    """Background scanner executed automatically by Telegram's JobQueue."""
+    """Background scanner executed automatically by Telegram's JobQueue every 15 minutes."""
     try:
         log.info("Running automated 15-minute background market scan...")
         report = await global_scanner.scan_all(bypass_cooldown=False)
@@ -47,13 +48,14 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
         log.error(f"Automated scan failure: {e}")
 
 async def post_init_hook(application):
-    """Runs inside the bot's own event loop right after initialization."""
+    """Runs inside the bot's own event loop immediately upon connection."""
     log.info("Master bot connected. Dispatching boot alert...")
     startup_text = (
         "💎 **Dual Market Trade Engine Online**\n\n"
         "• Mode: Standalone Direct Alert Terminal\n"
         "• Auto Scan: Active Every 15 Minutes\n"
-        "• Exits: TP1, TP2, TP3 Multi-Target Enabled\n"
+        "• Exits: TP1, TP2, TP3 Multi-Target Scale-Out\n"
+        "• Timing: Session & Opportunity Badges Active\n"
         "• Listener: Ready for commands"
     )
     try:
@@ -70,7 +72,7 @@ def main():
     log.info("        DUAL MARKET TRADE ENGINE (DIRECT)         ")
     log.info("==================================================")
 
-    # Build Application
+    # Build Application with clean async post_init
     app = (
         ApplicationBuilder()
         .token(Config.TELEGRAM_BOT_TOKEN)
@@ -82,6 +84,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("hours", cmd_trading_hours))
     app.add_handler(CommandHandler("rules", cmd_risk_rules))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_press))
     app.add_error_handler(error_handler)
@@ -91,7 +94,7 @@ def main():
         app.job_queue.run_repeating(
             scheduled_scan_job,
             interval=900,  # 900 seconds = 15 minutes
-            first=60       # First scan runs 60 seconds after startup
+            first=60       # First scan runs 60 seconds after launch
         )
         log.info("15-minute background scan scheduled successfully.")
 
