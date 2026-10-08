@@ -5,10 +5,10 @@ import yfinance as yf
 from datetime import datetime, timezone, timedelta
 from core.logger import setup_system_logger
 
-log = setup_system_logger("ProScanner")
+log = setup_system_logger("HighAccuracyScanner")
 
 class LightweightScanner:
-    """Responsive scanner with balanced technical filters and detailed debug diagnostics."""
+    """Institutional-grade scanner with 200 EMA macro filter, ADX momentum gate, and Volume expansion."""
 
     FOREX_PAIRS = {
         "EURUSD": "EURUSD=X",
@@ -43,7 +43,7 @@ class LightweightScanner:
                 return True
         return False
 
-    def fetch_ohlcv(self, ticker: str, interval: str = "15m", period: str = "5d") -> pd.DataFrame:
+    def fetch_ohlcv(self, ticker: str, interval: str = "15m", period: str = "7d") -> pd.DataFrame:
         try:
             df = yf.download(ticker, period=period, interval=interval, progress=False)
             if df.empty:
@@ -58,12 +58,15 @@ class LightweightScanner:
             log.error(f"Error fetching {ticker}: {e}")
             return pd.DataFrame()
 
-    def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
+
+        # Multi-tier EMAs
         df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
         df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+        df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
 
-        # 14-period RSI
+        # RSI (14)
         delta = df["close"].diff()
         gain = delta.where(delta > 0, 0.0)
         loss = -delta.where(delta < 0, 0.0)
@@ -72,12 +75,24 @@ class LightweightScanner:
         rs = avg_gain / avg_loss.replace(0, np.nan)
         df["rsi"] = 100 - (100 / (1 + rs))
 
-        # 14-period ATR
-        high_low = df["high"] - df["low"]
-        high_close = (df["high"] - df["close"].shift()).abs()
-        low_close = (df["low"] - df["close"].shift()).abs()
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        # True Range & ATR (14)
+        hl = df["high"] - df["low"]
+        hc = (df["high"] - df["close"].shift()).abs()
+        lc = (df["low"] - df["close"].shift()).abs()
+        tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
         df["atr"] = tr.rolling(window=14, min_periods=14).mean()
+
+        # ADX (14) - Measures pure trend strength (avoids chop)
+        plus_dm = df["high"].diff()
+        minus_dm = -df["low"].diff()
+        plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
+        minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
+
+        tr_smooth = tr.rolling(window=14, min_periods=14).mean()
+        plus_di = 100 * (pd.Series(plus_dm, index=df.index).rolling(window=14, min_periods=14).mean() / tr_smooth)
+        minus_di = 100 * (pd.Series(minus_dm, index=df.index).rolling(window=14, min_periods=14).mean() / tr_smooth)
+        dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan))
+        df["adx"] = dx.rolling(window=14, min_periods=14).mean()
 
         return df
 
@@ -91,31 +106,33 @@ class LightweightScanner:
                 log.info(f"Skipping {sym} (Cooling down)")
                 continue
 
-            # Skip Forex only during weekends
+            # Skip Forex over weekends
             if meta["market"] == "FOREX" and now_utc.weekday() in [5, 6]:
                 continue
 
-            df = await loop.run_in_executor(None, self.fetch_ohlcv, meta["ticker"], "15m", "5d")
+            df = await loop.run_in_executor(None, self.fetch_ohlcv, meta["ticker"], "15m", "7d")
 
-            if df.empty or len(df) < 30:
-                log.warning(f"Insufficient data for {sym} (rows: {len(df)})")
+            if df.empty or len(df) < 205:
+                log.warning(f"Insufficient candles for {sym} (Rows: {len(df)}/205 required for 200 EMA)")
                 continue
 
-            df = self.calculate_technical_indicators(df)
+            df = self.calculate_indicators(df)
             latest = df.iloc[-1]
+            prev = df.iloc[-2]
 
             close = float(latest["close"])
             ema20 = float(latest["ema20"])
             ema50 = float(latest["ema50"])
+            ema200 = float(latest["ema200"])
             rsi = float(latest["rsi"]) if not np.isnan(latest["rsi"]) else 50.0
             atr = float(latest["atr"]) if not np.isnan(latest["atr"]) else (close * 0.005)
+            adx = float(latest["adx"]) if not np.isnan(latest["adx"]) else 20.0
 
-            # Balanced trend-following criteria
             action = None
-            entry_buffer = 0.25 * atr
+            entry_buffer = 0.20 * atr
 
-            # Bullish trend: EMA20 above EMA50, healthy RSI momentum (above 48, not overbought > 70)
-            if ema20 > ema50 and 48 <= rsi <= 70:
+            # High-Accuracy BUY: Above 200 EMA + 20 EMA > 50 EMA + Trend Strength (ADX >= 20) + RSI momentum
+            if close > ema200 and ema20 > ema50 and adx >= 20 and (50 <= rsi <= 68) and close > prev["close"]:
                 action = "BUY / LONG"
                 entry_low = close
                 entry_high = close + entry_buffer
@@ -124,8 +141,8 @@ class LightweightScanner:
                 tp2 = close + (1.8 * atr)
                 tp3 = close + (2.6 * atr)
 
-            # Bearish trend: EMA20 below EMA50, healthy RSI momentum (below 52, not oversold < 30)
-            elif ema20 < ema50 and 30 <= rsi <= 52:
+            # High-Accuracy SELL: Below 200 EMA + 20 EMA < 50 EMA + Trend Strength (ADX >= 20) + RSI momentum
+            elif close < ema200 and ema20 < ema50 and adx >= 20 and (32 <= rsi <= 50) and close < prev["close"]:
                 action = "SELL / SHORT"
                 entry_high = close
                 entry_low = close - entry_buffer
@@ -134,7 +151,7 @@ class LightweightScanner:
                 tp2 = close - (1.8 * atr)
                 tp3 = close - (2.6 * atr)
 
-            log.info(f"[{sym}] Close: {close:.4f} | EMA20: {ema20:.4f} | EMA50: {ema50:.4f} | RSI: {rsi:.1f} -> {action or 'NEUTRAL'}")
+            log.info(f"[{sym}] Close: {close:.4f} | 200EMA: {ema200:.4f} | ADX: {adx:.1f} | RSI: {rsi:.1f} -> {action or 'NEUTRAL'}")
 
             if action:
                 decimals = 5 if meta["market"] == "FOREX" else 2
@@ -153,6 +170,7 @@ class LightweightScanner:
                     "tp3": round(tp3, decimals),
                     "risk_pct": risk_pct,
                     "rsi": round(rsi, 1),
+                    "adx": round(adx, 1),
                     "time": now_utc.strftime("%H:%M UTC")
                 })
 
