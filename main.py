@@ -21,48 +21,55 @@ from telegram_bot import (
 )
 
 log = setup_system_logger("MasterEngine")
+
+# Master admin notifier (Bot 1)
 notifier = TelegramNotifier(bot_token=Config.TELEGRAM_BOT_TOKEN, chat_id=Config.TELEGRAM_CHAT_ID)
 
-# Target chat/channel ID for your friend or clients
+# Client / Partner dispatch bot (Bot 2)
+PARTNER_BOT_TOKEN = os.getenv("PARTNER_BOT_TOKEN")
 PARTNER_CHAT_ID = os.getenv("PARTNER_CHAT_ID")
-standalone_bot = Bot(token=Config.TELEGRAM_BOT_TOKEN)
+
+partner_bot = Bot(token=PARTNER_BOT_TOKEN) if PARTNER_BOT_TOKEN else None
 
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    log.error(f"Telegram polling error: {context.error}")
+    """Logs unexpected exceptions in the Telegram polling handler."""
+    log.error(f"Telegram polling error encountered: {context.error}")
 
 async def broadcast_live_setups():
-    """Scans markets and dispatches dual-format alerts."""
+    """Scans markets and dispatches signals across both bot channels."""
+    # Scheduled scans strictly adhere to the 2-hour symbol cooldown
     report = await global_scanner.scan_all(bypass_cooldown=False)
     if not report.empty:
         for _, row in report.iterrows():
-            # 1. Deliver full master signal to your private admin chat
+            # 1. Deliver comprehensive master signal to your private admin bot
             admin_msg = format_vip_signal(row)
             notifier.send_alert(admin_msg)
 
-            # 2. Deliver filtered signal (TP1 & TP2 only) to your partner/clients
-            if PARTNER_CHAT_ID:
+            # 2. Deliver filtered signal (TP1 & TP2 only) to your partner / client channel
+            if partner_bot and PARTNER_CHAT_ID:
                 try:
                     client_msg = format_filtered_partner_signal(row)
-                    await standalone_bot.send_message(
+                    await partner_bot.send_message(
                         chat_id=PARTNER_CHAT_ID,
                         text=client_msg,
                         parse_mode="Markdown"
                     )
-                    log.info(f"Filtered signal for {row['symbol']} sent to partner/client channel.")
+                    log.info(f"Filtered signal for {row['symbol']} posted to client channel.")
                 except Exception as ex:
-                    log.error(f"Failed sending filtered signal to partner: {ex}")
+                    log.error(f"Failed delivering filtered signal via secondary bot: {ex}")
 
 def scheduled_job():
+    """Thread-safe runner for asynchronous market scans."""
     try:
         asyncio.run(broadcast_live_setups())
     except Exception as e:
-        log.error(f"Background broadcast error: {e}")
+        log.error(f"Background broadcast cycle failure: {e}")
 
 def scheduler_thread():
-    # Runs the autonomous scan every 15 minutes
+    """Background worker running market scans every 15 minutes."""
     schedule.every(15).minutes.do(scheduled_job)
     while True:
         try:
@@ -72,29 +79,41 @@ def scheduler_thread():
         time.sleep(1)
 
 def run_bot():
+    """Initializes and runs the primary interactive Telegram bot."""
     app = ApplicationBuilder().token(Config.TELEGRAM_BOT_TOKEN).build()
 
+    # Register command callbacks
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("vip", cmd_sub_info))
     app.add_handler(CommandHandler("rules", cmd_risk_rules))
+
+    # Register custom keyboard buttons
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_press))
+
+    # Register error callback
     app.add_error_handler(error_handler)
 
-    log.info("VIP Signal Engine listening for Telegram interactions...")
+    log.info("Primary Telegram bot listener active...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    log.info("Launching Dual-Delivery VIP Signal Engine...")
+    log.info("==================================================")
+    log.info("   DUAL-DELIVERY COMMERCIAL SIGNAL SYSTEM LIVE    ")
+    log.info("==================================================")
 
+    # Launch autonomous scanner thread
     t = threading.Thread(target=scheduler_thread, daemon=True)
     t.start()
 
+    secondary_status = "Connected ✅" if (partner_bot and PARTNER_CHAT_ID) else "Not Configured (Optional) ⚠️"
+
     notifier.send_alert(
-        "💎 **Dual-Delivery Signal Engine Online**\n\n"
-        "• Admin Channel: Full Master Metrics (TP1, TP2, TP3)\n"
-        f"• Partner/Client Delivery: {'Configured ✅' if PARTNER_CHAT_ID else 'Awaiting PARTNER_CHAT_ID ⚠️'}\n"
-        "• Client Format: Compressed (Entry Range, SL, TP1 & TP2 only)"
+        "💎 **Dual-Delivery Engine Online**\n\n"
+        "• Master Admin Feed: Active (Full Metrics)\n"
+        f"• Client / Partner Bot: {secondary_status}\n"
+        "• Scan Frequency: Every 15 minutes\n"
+        "• Anti-Spam Cooldown: 2 Hours per Pair"
     )
 
     run_bot()
