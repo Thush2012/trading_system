@@ -5,53 +5,48 @@ from core.config import Config
 from core.logger import setup_system_logger
 from core.scanner import LightweightScanner
 
-log = setup_system_logger("TelegramBot")
+log = setup_system_logger("MasterTelegramBot")
 global_scanner = LightweightScanner()
 
-# Admin thumb keyboard
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("⚡ Scan Live Setups")],
-        [KeyboardButton("📋 VIP Subscription Info"), KeyboardButton("📖 Risk Management Rules")]
+        [KeyboardButton("ℹ️ System Health"), KeyboardButton("📖 Risk Rules")]
     ],
     resize_keyboard=True
 )
 
-def format_vip_signal(row) -> str:
-    """Master detailed signal for your private admin view."""
+def format_master_signal(row) -> str:
+    """Full institutional view sent to the Master Admin."""
     is_crypto = row["asset_class"] == "CRYPTO"
     direction_badge = "🟢 LONG" if "BUY" in row["action"] else "🔴 SHORT"
-    exchange_note = "Binance USDT-M / Bybit" if is_crypto else "MT4 / MT5 Broker"
+    market_note = "Binance USDT-M / Bybit" if is_crypto else "Forex Broker"
     leverage_note = "3x – 5x Isolated" if is_crypto else "1:50 – 1:200"
-    size_note = "1% – 2% Max Risk" if is_crypto else "0.01 lot per $500–$1,000"
 
     msg = (
         f"═══════════════════════════\n"
-        f"👑 **MASTER ADMIN SIGNAL** {row['icon']}\n"
+        f"👑 **MASTER ENGINE SIGNAL** {row['icon']}\n"
         f"═══════════════════════════\n\n"
         f"• **Asset:** `{row['symbol']}`\n"
-        f"• **Market:** {row['asset_class']} ({exchange_note})\n"
+        f"• **Market:** {row['asset_class']} ({market_note})\n"
         f"• **Direction:** {direction_badge}\n"
-        f"• **Signal Time:** `{row['time']}`\n\n"
+        f"• **Time:** `{row['time']}`\n\n"
         f"🎯 **PRICE LEVELS**\n"
         f"┌ 🟢 **Entry Zone:** `{row['entry_low']}` – `{row['entry_high']}`\n"
-        f"├ 🛑 **Stop Loss:** `{row['sl']}`  *(Risk: {row['risk_pct']}%)*\n"
+        f"├ 🛑 **Stop Loss:** `{row['sl']}` (Risk: `{row['risk_pct']}%`)\n"
         f"├ 🥇 **TP1:** `{row['tp1']}`  *(Close 40% & Move SL to Entry)*\n"
         f"├ 🥈 **TP2:** `{row['tp2']}`  *(Close 30%)*\n"
-        f"└ 🏆 **TP3:** `{row['tp3']}`  *(Close final 30%)*\n\n"
+        f"└ 🏆 **TP3:** `{row['tp3']}`  *(Close remaining 30%)*\n\n"
         f"⚙️ **METRICS & SIZING**\n"
         f"• **Leverage:** `{leverage_note}`\n"
-        f"• **Position Size:** `{size_note}`\n"
-        f"• **Momentum RSI:** `{row['rsi']}`\n\n"
+        f"• **Momentum RSI (14):** `{row['rsi']}`\n"
         f"═══════════════════════════"
     )
     return msg
 
-def format_filtered_partner_signal(row) -> str:
-    """Clean, high-probability filtered signal for your friend and VIP clients.
-    
-    Removes TP3, indicators, and internal metadata. Focuses only on 
-    Entry Range, SL, TP1, and TP2.
+def format_reduced_client_signal(row) -> str:
+    """Reduced, high-clarity signal automatically sent to friends/clients.
+    Removes TP3, indicators, and internal metadata.
     """
     is_crypto = row["asset_class"] == "CRYPTO"
     direction = "🟢 BUY / LONG" if "BUY" in row["action"] else "🔴 SELL / SHORT"
@@ -59,72 +54,73 @@ def format_filtered_partner_signal(row) -> str:
     icon = row["icon"]
 
     msg = (
-        f"⚡ **NEW {market_tag} TRADE SIGNAL** {icon}\n\n"
+        f"⚡ **NEW {market_tag} TRADE OPPORTUNITY** {icon}\n\n"
         f"• **Pair:** `{row['symbol']}`\n"
         f"• **Action:** {direction}\n\n"
         f"🎯 **EXECUTION LEVELS**\n"
-        f"• **Entry Range:** `{row['entry_low']}` – `{row['entry_high']}`\n"
+        f"• **Entry Zone:** `{row['entry_low']}` – `{row['entry_high']}`\n"
         f"• **Stop Loss:** `{row['sl']}`\n\n"
         f"💰 **TAKE PROFIT TARGETS**\n"
-        f"• 🎯 **TP 1:** `{row['tp1']}`  *(Close 50% & Move SL to Entry)*\n"
-        f"• 🎯 **TP 2:** `{row['tp2']}`  *(Final Target: Close remaining 50%)*\n\n"
-        f"⚠️ _Strict Capital Management: Risk 1% to 2% max per trade._"
+        f"• 🎯 **TP 1:** `{row['tp1']}`  *(Close 50% & Set SL to Entry)*\n"
+        f"• 🎯 **TP 2:** `{row['tp2']}`  *(Final Target - Close 50%)*\n\n"
+        f"⚠️ _Strict Risk: Risk maximum 1% to 2% per trade._"
     )
     return msg
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome = (
-        "💎 **Dual-Market Signal Terminal Active**\n\n"
-        "• Dual Delivery Engine: Master Admin & Client Channel\n"
-        "• Filtered Output: TP1 & TP2 with Entry Range\n"
-        "• High Accuracy: 1H Trend + Volatility Filters\n\n"
-        "Use the menu below to query active opportunities."
+        "💎 **Dual Market Trade Engine Active**\n\n"
+        "• Core System: Standalone Master Engine\n"
+        "• Auto-Dispatch: Broadcasts reduced signals to selected client list\n"
+        "• High Accuracy: 1H Trend Confirmation + Volatility Entry Zones\n\n"
+        "Tap below to trigger an immediate live scan."
     )
     await update.message.reply_text(welcome, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
-async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 *Scanning market liquidity and higher-timeframe structures...*", parse_mode="Markdown")
-
-    report = await global_scanner.scan_all(bypass_cooldown=True)
-
-    if report.empty:
-        await update.message.reply_text(
-            "⚪ **No Qualified Setups Active**\n\n"
-            "All assets currently fail 1H trend alignment or momentum criteria. "
-            "Patience protects capital.",
-            parse_mode="Markdown",
-            reply_markup=MAIN_KEYBOARD
-        )
-        return
-
-    for _, row in report.iterrows():
-        await update.message.reply_text(format_vip_signal(row), parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
-
-async def cmd_sub_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "💎 **VIP SUBSCRIPTION PLAN**\n\n"
-        "• **Fee:** $15 / month\n"
-        "• **Delivery:** Streamlined alerts with Entry Zones and TP1/TP2 targets\n"
-        "• **Frequency:** 2–4 verified, high-probability setups daily\n"
-        "• **Payment:** USDT (TRC20/BEP20) or Binance Pay"
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = (
+        "ℹ️ **ENGINE STATUS**\n"
+        "• Background Poller: Active\n"
+        "• Feeds: Public Yahoo/Crypto Streams (MT5 Free)\n"
+        "• Target Scale-Out: TP1, TP2, TP3 Active\n"
+        "• CPU / RAM Overhead: Minimal Baseline"
     )
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+    await update.message.reply_text(status_msg, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
 async def cmd_risk_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rules = (
         "📖 **CAPITAL MANAGEMENT RULES**\n\n"
-        "1. **Entry Rule:** Only enter if the market price is within the Entry Range.\n"
-        "2. **TP1 Trigger:** When TP1 hits, take 50% profit and immediately move SL to your Entry price.\n"
-        "3. **TP2 Trigger:** Close the remaining 50% at TP2.\n"
-        "4. **Capital Preservation:** Never risk more than 1% to 2% of total balance per trade."
+        "1. **Entry Rule:** Only take trades if current price is inside the Entry Zone.\n"
+        "2. **TP1 Trigger:** When TP1 hits, take partial profit and move SL to Entry.\n"
+        "3. **TP2 Trigger:** Close remaining target volume at TP2.\n"
+        "4. **Max Risk:** Never risk more than 1% to 2% of total capital."
     )
     await update.message.reply_text(rules, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+
+async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔍 *Scanning market setups...*", parse_mode="Markdown")
+    try:
+        report = await global_scanner.scan_all(bypass_cooldown=True)
+        if report.empty:
+            await update.message.reply_text(
+                "⚪ **No Qualified Setups Active**\n\n"
+                "All pairs currently fail 1H trend alignment or momentum criteria.",
+                parse_mode="Markdown",
+                reply_markup=MAIN_KEYBOARD
+            )
+            return
+
+        for _, row in report.iterrows():
+            await update.message.reply_text(format_master_signal(row), parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+    except Exception as e:
+        log.error(f"Error during manual scan: {e}")
+        await update.message.reply_text(f"⚠️ Scan error: `{e}`", parse_mode="Markdown")
 
 async def handle_button_press(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = update.message.text
     if txt == "⚡ Scan Live Setups":
         await cmd_scan(update, context)
-    elif txt == "📋 VIP Subscription Info":
-        await cmd_sub_info(update, context)
-    elif txt == "📖 Risk Management Rules":
+    elif txt == "ℹ️ System Health":
+        await cmd_status(update, context)
+    elif txt == "📖 Risk Rules":
         await cmd_risk_rules(update, context)
