@@ -9,6 +9,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from core.config import Config
 from core.logger import setup_system_logger
+from core.tracker import TradeTracker
 from telegram_bot import (
     cmd_start,
     cmd_scan,
@@ -22,17 +23,29 @@ from telegram_bot import (
 
 log = setup_system_logger("MasterEngine")
 ADMIN_CHAT_ID = Config.TELEGRAM_CHAT_ID
+tracker = TradeTracker()
 
 logging.getLogger("telegram").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    """Logs unexpected exceptions from polling or job queue."""
     log.error(f"Telegram error encountered: {context.error}")
 
 async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
-    """Background scanner executed automatically by Telegram's JobQueue every 15 minutes."""
+    """Background job: checks active trade targets and scans for new setups."""
     try:
+        # 1. Check existing open trades for TP/SL hits
+        log.info("Checking active trades against live price targets...")
+        trade_updates = tracker.evaluate_active_trades()
+        for update_event in trade_updates:
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=update_event["msg"],
+                parse_mode="Markdown"
+            )
+            log.info(f"Published trade outcome update for {update_event['symbol']}: {update_event['type']}")
+
+        # 2. Run standard 15-minute market scanner
         log.info("Running automated 15-minute background market scan...")
         report = await global_scanner.scan_all(bypass_cooldown=False)
         if not report.empty:
@@ -43,19 +56,22 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE):
                     text=msg,
                     parse_mode="Markdown"
                 )
-                log.info(f"Signal for {row['symbol']} delivered to admin.")
+                # Automatically register into tracker
+                ticker = global_scanner.market_map.get(row["symbol"].replace("USDT", "USD"), {}).get("ticker", "")
+                if ticker:
+                    tracker.register_trade(row.to_dict(), ticker)
+                log.info(f"Signal for {row['symbol']} delivered and registered in tracker.")
+
     except Exception as e:
-        log.error(f"Automated scan failure: {e}")
+        log.error(f"Background evaluation error: {e}")
 
 async def post_init_hook(application):
-    """Runs inside the bot's own event loop immediately upon connection."""
     log.info("Master bot connected. Dispatching boot alert...")
     startup_text = (
         "💎 **Dual Market Trade Engine Online**\n\n"
         "• Mode: Standalone Direct Alert Terminal\n"
-        "• Auto Scan: Active Every 15 Minutes\n"
-        "• Exits: TP1, TP2, TP3 Multi-Target Scale-Out\n"
-        "• Timing: Session & Opportunity Badges Active\n"
+        "• Auto Scan & TP/SL Tracker: Active (15m Intervals)\n"
+        "• Outcome Alerts: Automatic TP1, TP2, TP3 & SL Tracking\n"
         "• Listener: Ready for commands"
     )
     try:
@@ -69,10 +85,9 @@ async def post_init_hook(application):
 
 def main():
     log.info("==================================================")
-    log.info("        DUAL MARKET TRADE ENGINE (DIRECT)         ")
+    log.info("        DUAL MARKET TRADE ENGINE (TRACKER ON)     ")
     log.info("==================================================")
 
-    # Build Application with clean async post_init
     app = (
         ApplicationBuilder()
         .token(Config.TELEGRAM_BOT_TOKEN)
@@ -80,7 +95,6 @@ def main():
         .build()
     )
 
-    # Register Command & Message Handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("status", cmd_status))
@@ -89,16 +103,15 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_press))
     app.add_error_handler(error_handler)
 
-    # Schedule 15-minute background scans using built-in JobQueue
     if app.job_queue:
         app.job_queue.run_repeating(
             scheduled_scan_job,
-            interval=900,  # 900 seconds = 15 minutes
-            first=60       # First scan runs 60 seconds after launch
+            interval=900,  # 15 minutes
+            first=30       # Starts checking 30 seconds after boot
         )
-        log.info("15-minute background scan scheduled successfully.")
+        log.info("15-minute background scan & tracker loop scheduled.")
 
-    log.info("Dual Market Trade Engine listening for updates...")
+    log.info("Master Engine listening for updates...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
